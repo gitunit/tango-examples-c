@@ -34,6 +34,8 @@ import android.widget.Toast;
 
 import com.projecttango.examples.cpp.util.TangoInitializationHelper;
 
+import org.opencv.android.CameraBridgeViewBase;
+
 /**
  * Primary activity of the example.
  */
@@ -63,6 +65,8 @@ public class MainActivity extends Activity {
 
   // Handles the debug text UI update loop.
   private Handler mHandler = new Handler();
+
+  private CameraBridgeViewBase mOpenCvCameraView;
 
   // Tango Service connection.
   ServiceConnection mTangoServiceConnection = new ServiceConnection() {
@@ -156,7 +160,8 @@ public class MainActivity extends Activity {
   protected void onResume() {
     super.onResume();
     mGLView.onResume();
-    TangoInitializationHelper.bindTangoService(this, mTangoServiceConnection); 
+    TangoInitializationHelper.bindTangoService(this, mTangoServiceConnection);
+    mHandler.post(mUpdateUiLoopRunnable);
   }
 
   @Override
