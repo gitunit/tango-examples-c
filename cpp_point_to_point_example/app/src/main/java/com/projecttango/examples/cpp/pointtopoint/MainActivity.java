@@ -105,7 +105,7 @@ public class MainActivity extends Activity {
 
     setContentView(R.layout.activity_main);
 
-    // Text views for Tango library versions
+    // Text views for Tango library versions.
     mDistanceMeasure = (TextView) findViewById(R.id.distance_textview);
 
     configureGlSurfaceView();
@@ -172,10 +172,9 @@ public class MainActivity extends Activity {
     super.onResume();
     mGLView.onResume();
 
-    // Start the debug text UI update loop.
+    TangoInitializationHelper.bindTangoService(this, mTangoServiceConnection);
     mHandler.post(mUpdateUiLoopRunnable);
-    
-    TangoInitializationHelper.bindTangoService(this, mTangoServiceConnection); 
+
   }
 
   @Override
