@@ -19,18 +19,20 @@ package com.projecttango.examples.cpp.pointtopoint;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.ServiceConnection;
+import android.hardware.Camera;
+import android.hardware.display.DisplayManager;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.util.Log;
+import android.view.Display;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.WindowManager;
 import android.widget.CheckBox;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import com.projecttango.examples.cpp.util.TangoInitializationHelper;
 
@@ -40,16 +42,13 @@ import com.projecttango.examples.cpp.util.TangoInitializationHelper;
 public class MainActivity extends Activity {
   private static final String TAG = MainActivity.class.getSimpleName();
 
-  // The minimum Tango Core version required from this application.
-  private static final int  MIN_TANGO_CORE_VERSION = 9377;
-
-  // The package name of Tang Core, used for checking minimum Tango Core version.
-  private static final String TANGO_PACKAGE_NAME = "com.projecttango.tango";
-
   // The interval at which we'll update our UI debug text in milliseconds.
   // This is the rate at which we query our native wrapper around the tango
   // service for pose and event information.
   private static final int UPDATE_UI_INTERVAL_MS = 10;
+
+  // For all current Tango devices, color camera is in the camera id 0.
+  private static final int COLOR_CAMERA_ID = 0;
 
   // GLSurfaceView and renderer, all of the graphic content is rendered
   // through OpenGL ES 2.0 in native code.
@@ -67,15 +66,8 @@ public class MainActivity extends Activity {
   // Tango Service connection.
   ServiceConnection mTangoServiceConnection = new ServiceConnection() {
       public void onServiceConnected(ComponentName name, IBinder service) {
-        JNIInterface.onTangoServiceConnected(service);
-
-        // Setup the configuration of the Tango Service.
-        int ret = JNIInterface.tangoSetupAndConnect();
-
-        if (ret != 0) {
-          Log.e(TAG, "Failed to set config and connect with code: " + ret);
-          finish();
-        }
+        TangoJNINative.onTangoServiceConnected(service);
+        setAndroidOrientation();
       }
 
       public void onServiceDisconnected(ComponentName name) {
@@ -89,15 +81,27 @@ public class MainActivity extends Activity {
     super.onCreate(savedInstanceState);
 
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                         WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
-    // Check if the Tango Core is out dated.
-    if (!JNIInterface.checkTangoVersion(this, MIN_TANGO_CORE_VERSION)) {
-      Toast.makeText(this, "Tango Core out dated, please update in Play Store", 
-                     Toast.LENGTH_LONG).show();
-      finish();
-      return;
+    DisplayManager displayManager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+    if (displayManager != null) {
+      displayManager.registerDisplayListener(new DisplayManager.DisplayListener() {
+        @Override
+        public void onDisplayAdded(int displayId) {}
+
+        @Override
+        public void onDisplayChanged(int displayId) {
+          synchronized (this) {
+            setAndroidOrientation();
+          }
+        }
+
+        @Override
+        public void onDisplayRemoved(int displayId) {}
+      }, null);
     }
+
+    TangoJNINative.onCreate(this);
 
     setContentView(R.layout.activity_main);
 
@@ -113,17 +117,28 @@ public class MainActivity extends Activity {
     if (event.getAction() == MotionEvent.ACTION_DOWN) {
       // Ensure that handling of the touch event is run on the GL thread
       // rather than Android UI thread. This ensures we can modify
-      // rendering state without locking.  This event triggers a plane
-      // fit.
+      // rendering state without locking.  This event triggers a point
+      // placement.
       mGLView.queueEvent(new Runnable() {
           @Override
           public void run() {
-            JNIInterface.onTouchEvent(event.getX(), event.getY());
+            TangoJNINative.onTouchEvent(event.getX(), event.getY());
           }
         });
     }
 
     return super.onTouchEvent(event);
+  }
+
+  // Pass device's camera sensor rotation and display rotation to native layer.
+  // These two parameter are important for Tango to render video overlay and
+  // virtual objects in the correct device orientation.
+  private void setAndroidOrientation() {
+    Display display = getWindowManager().getDefaultDisplay();
+    Camera.CameraInfo colorCameraInfo = new Camera.CameraInfo();
+    Camera.getCameraInfo(COLOR_CAMERA_ID, colorCameraInfo);
+
+    TangoJNINative.onDisplayChanged(display.getRotation(), colorCameraInfo.orientation);
   }
 
   private void configureGlSurfaceView() {
@@ -144,9 +159,9 @@ public class MainActivity extends Activity {
           // Is the view now checked?
           mBilateralFiltering = ((CheckBox) view).isChecked();
           if (mBilateralFiltering) {
-            JNIInterface.setUpsampleViaBilateralFiltering(true);
+            TangoJNINative.setUpsampleViaBilateralFiltering(true);
           } else {
-            JNIInterface.setUpsampleViaBilateralFiltering(false);
+            TangoJNINative.setUpsampleViaBilateralFiltering(false);
           }
         }
       });
@@ -156,28 +171,23 @@ public class MainActivity extends Activity {
   protected void onResume() {
     super.onResume();
     mGLView.onResume();
+
     TangoInitializationHelper.bindTangoService(this, mTangoServiceConnection);
     mHandler.post(mUpdateUiLoopRunnable);
+
   }
 
   @Override
   protected void onPause() {
     super.onPause();
     mGLView.onPause();
-    JNIInterface.deleteResources();
-
-    // Disconnect from the Tango Service, release all the resources that
-    // the app is holding from the Tango Service.
-    JNIInterface.tangoDisconnect();
+    TangoJNINative.onPause();
     unbindService(mTangoServiceConnection);
+    mHandler.removeCallbacksAndMessages(null);
   }
 
   public void surfaceCreated() {
-    int ret = JNIInterface.initializeGLContent();
-
-    if (ret != 0) {
-      Log.e(TAG, "Failed to connect texture with code: " + ret);
-    }
+    TangoJNINative.onGlSurfaceCreated();
   }
 
   // Debug text UI update loop, updating at 10Hz.
@@ -191,7 +201,7 @@ public class MainActivity extends Activity {
   // Update the debug text UI.
   private void updateUi() {
     try {
-      mDistanceMeasure.setText(JNIInterface.getPointSeparation());
+      mDistanceMeasure.setText(TangoJNINative.getPointSeparation());
     } catch (Exception e) {
       e.printStackTrace();
       Log.e(TAG, "Exception updating UI elements");

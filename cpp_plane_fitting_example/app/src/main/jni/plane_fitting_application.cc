@@ -28,7 +28,8 @@
 namespace tango_plane_fitting {
 
 namespace {
-
+// The minimum Tango Core version required from this application.
+constexpr int kTangoCoreMinimumVersion = 9377;
 constexpr float kCubeScale = 0.05f;
 
 /**
@@ -37,26 +38,30 @@ constexpr float kCubeScale = 0.05f;
  *
  * @param context Will be a pointer to a PlaneFittingApplication instance on
  * which to call callbacks.
- * @param xyz_ij The point cloud to pass on.
+ * @param point_cloud The point cloud to pass on.
  */
-void OnXYZijAvailableRouter(void* context, const TangoXYZij* xyz_ij) {
+void OnPointCloudAvailableRouter(void* context,
+                                 const TangoPointCloud* point_cloud) {
   PlaneFittingApplication* app = static_cast<PlaneFittingApplication*>(context);
-  app->OnXYZijAvailable(xyz_ij);
+  app->OnPointCloudAvailable(point_cloud);
 }
+
+// This function does nothing. TangoService_connectOnTextureAvailable
+// requires a callback function pointer, and it cannot be null.
+void onTextureAvailableRouter(void*, TangoCameraId) { return; }
 
 }  // end namespace
 
-void PlaneFittingApplication::OnXYZijAvailable(const TangoXYZij* xyz_ij) {
-  TangoSupport_updatePointCloud(point_cloud_manager_, xyz_ij);
+void PlaneFittingApplication::OnPointCloudAvailable(
+    const TangoPointCloud* point_cloud) {
+  TangoSupport_updatePointCloud(point_cloud_manager_, point_cloud);
 }
 
 PlaneFittingApplication::PlaneFittingApplication()
     : point_cloud_debug_render_(false),
       last_gpu_timestamp_(0.0),
-      opengl_world_T_start_service_(
-          tango_gl::conversions::opengl_world_T_tango_world()),
-      color_camera_T_opengl_camera_(
-          tango_gl::conversions::color_camera_T_opengl_camera()) {}
+      is_service_connected_(false),
+      is_gl_initialized_(false) {}
 
 PlaneFittingApplication::~PlaneFittingApplication() {
   TangoConfig_free(tango_config_);
@@ -64,74 +69,67 @@ PlaneFittingApplication::~PlaneFittingApplication() {
   point_cloud_manager_ = nullptr;
 }
 
-bool PlaneFittingApplication::CheckTangoVersion(JNIEnv* env, jobject activity,
-                                                int min_tango_version) {
+void PlaneFittingApplication::OnCreate(JNIEnv* env, jobject activity) {
   // Check that we have the minimum required version of Tango.
   int version;
   TangoErrorType err = TangoSupport_GetTangoVersion(env, activity, &version);
-  if (err != TANGO_SUCCESS || version < min_tango_version) {
-    LOGE("Tango version is out of date.");
-    return false;
+  if (err != TANGO_SUCCESS || version < kTangoCoreMinimumVersion) {
+    LOGE(
+        "PlaneFittingApplication::OnCreate, Tango Core version is out of "
+        "date.");
+    std::exit(EXIT_SUCCESS);
   }
-
-  tango_config_ = TangoService_getConfig(TANGO_CONFIG_DEFAULT);
-  if (tango_config_ == nullptr) {
-    LOGE("Unable to get tango config");
-    return false;
-  }
-
-  if (point_cloud_manager_ == nullptr) {
-    int32_t max_point_cloud_elements;
-    err = TangoConfig_getInt32(tango_config_, "max_point_cloud_elements",
-                               &max_point_cloud_elements);
-    if (err != TANGO_SUCCESS) {
-      LOGE("Failed to query maximum number of point cloud elements.");
-      return false;
-    }
-
-    err = TangoSupport_createPointCloudManager(max_point_cloud_elements,
-                                               &point_cloud_manager_);
-    if (err != TANGO_SUCCESS) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 void PlaneFittingApplication::OnTangoServiceConnected(JNIEnv* env,
                                                       jobject binder) {
   TangoErrorType ret = TangoService_setBinder(env, binder);
   if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PlaneFittingApplication: Failed to bind Tango service with"
-        "error code: %d",
-        ret);
+    LOGE("PlaneFittingApplication: TangoService_setBinder error");
+    std::exit(EXIT_SUCCESS);
   }
+
+  TangoSetupConfig();
+  TangoConnectCallbacks();
+  TangoConnect();
+  is_service_connected_ = true;
 }
 
-bool PlaneFittingApplication::TangoSetupAndConnect() {
+void PlaneFittingApplication::TangoSetupConfig() {
   // Here, we will configure the service to run in the way we would want. For
   // this application, we will start from the default configuration
   // (TANGO_CONFIG_DEFAULT). This enables basic motion tracking capabilities.
   // In addition to motion tracking, however, we want to run with depth so that
   // we can measure things. As such, we are going to set an additional flag
   // "config_enable_depth" to true.
+  tango_config_ = TangoService_getConfig(TANGO_CONFIG_DEFAULT);
   if (tango_config_ == nullptr) {
-    return false;
+    LOGE(
+        "PlaneFittingApplication::TangoSetupConfig, Unable to get tango "
+        "config");
+    std::exit(EXIT_SUCCESS);
   }
 
   TangoErrorType ret =
       TangoConfig_setBool(tango_config_, "config_enable_depth", true);
   if (ret != TANGO_SUCCESS) {
-    LOGE("Failed to enable depth.");
-    return false;
+    LOGE("PlaneFittingApplication::TangoSetupConfig, Failed to enable depth.");
+    std::exit(EXIT_SUCCESS);
+  }
+
+  ret = TangoConfig_setInt32(tango_config_, "config_depth_mode",
+                             TANGO_POINTCLOUD_XYZC);
+  if (ret != TANGO_SUCCESS) {
+    LOGE("PlaneFittingApplication::TangoSetupConfig, Failed to configure to "
+         "XYZC.");
+    std::exit(EXIT_SUCCESS);
   }
 
   ret = TangoConfig_setBool(tango_config_, "config_enable_color_camera", true);
   if (ret != TANGO_SUCCESS) {
-    LOGE("Failed to enable color camera.");
-    return false;
+    LOGE("PlaneFittingApplication::TangoSetupConfig, Failed to enable color "
+         "camera.");
+    std::exit(EXIT_SUCCESS);
   }
 
   // Note that it is super important for AR applications that we enable low
@@ -141,24 +139,80 @@ bool PlaneFittingApplication::TangoSetupAndConnect() {
   ret = TangoConfig_setBool(tango_config_,
                             "config_enable_low_latency_imu_integration", true);
   if (ret != TANGO_SUCCESS) {
-    LOGE("Failed to enable low latency imu integration.");
-    return false;
+    LOGE("PlaneFittingApplication::TangoSetupConfig, Failed to enable low "
+         "latency imu integration.");
+    std::exit(EXIT_SUCCESS);
   }
 
+  // Drift correction allows motion tracking to recover after it loses tracking.
+  //
+  // The drift corrected pose is is available through the frame pair with
+  // base frame AREA_DESCRIPTION and target frame DEVICE.
+  ret = TangoConfig_setBool(tango_config_, "config_enable_drift_correction",
+                            true);
+  if (ret != TANGO_SUCCESS) {
+    LOGE(
+        "PlaneFittingApplication::TangoSetupConfig, enabling "
+        "config_enable_drift_correction failed with error code: %d",
+        ret);
+    std::exit(EXIT_SUCCESS);
+  }
+
+  if (point_cloud_manager_ == nullptr) {
+    int32_t max_point_cloud_elements;
+    ret = TangoConfig_getInt32(tango_config_, "max_point_cloud_elements",
+                               &max_point_cloud_elements);
+    if (ret != TANGO_SUCCESS) {
+      LOGE(
+          "PlaneFittingApplication::TangoSetupConfig, Failed to query maximum "
+          "number of point cloud elements.");
+      std::exit(EXIT_SUCCESS);
+    }
+
+    ret = TangoSupport_createPointCloudManager(max_point_cloud_elements,
+                                               &point_cloud_manager_);
+    if (ret != TANGO_SUCCESS) {
+      LOGE(
+          "PlaneFittingApplication::TangoSetupConfig, Failed to create a "
+          "point cloud manager.");
+      std::exit(EXIT_SUCCESS);
+    }
+  }
+}
+
+void PlaneFittingApplication::TangoConnectCallbacks() {
   // Register for depth notification.
-  ret = TangoService_connectOnXYZijAvailable(OnXYZijAvailableRouter);
+  TangoErrorType ret =
+      TangoService_connectOnPointCloudAvailable(OnPointCloudAvailableRouter);
   if (ret != TANGO_SUCCESS) {
     LOGE("Failed to connected to depth callback.");
-    return false;
+    std::exit(EXIT_SUCCESS);
   }
 
+  // The Tango service allows you to connect an OpenGL texture directly to its
+  // RGB and fisheye cameras. This is the most efficient way of receiving
+  // images from the service because it avoids copies. You get access to the
+  // graphic buffer directly. As we are interested in rendering the color image
+  // in our render loop, we will be polling for the color image as needed.
+  ret = TangoService_connectOnTextureAvailable(TANGO_CAMERA_COLOR, this,
+                                               onTextureAvailableRouter);
+  if (ret != TANGO_SUCCESS) {
+    LOGE(
+        "PlaneFittingApplication: Failed to connect texture callback with"
+        "error code: %d",
+        ret);
+    std::exit(EXIT_SUCCESS);
+  }
+}
+
+void PlaneFittingApplication::TangoConnect() {
   // Here, we will connect to the TangoService and set up to run. Note that
   // we are passing in a pointer to ourselves as the context which will be
   // passed back in our callbacks.
-  ret = TangoService_connect(this, tango_config_);
+  TangoErrorType ret = TangoService_connect(this, tango_config_);
   if (ret != TANGO_SUCCESS) {
     LOGE("PlaneFittingApplication: Failed to connect to the Tango service.");
-    return false;
+    std::exit(EXIT_SUCCESS);
   }
 
   // Get the intrinsics for the color camera and pass them on to the depth
@@ -170,6 +224,7 @@ bool PlaneFittingApplication::TangoSetupAndConnect() {
     LOGE(
         "PlaneFittingApplication: Failed to get the intrinsics for the color"
         "camera.");
+    std::exit(EXIT_SUCCESS);
   }
 
   constexpr float kNearPlane = 0.1;
@@ -181,139 +236,80 @@ bool PlaneFittingApplication::TangoSetupAndConnect() {
       color_camera_intrinsics_.cx, color_camera_intrinsics_.cy, kNearPlane,
       kFarPlane);
 
-  // Setup fixed pose information
-  TangoPoseData pose_imu_T_color_t0;
-  TangoPoseData pose_imu_T_depth_t0;
-  TangoPoseData pose_imu_T_device_t0;
+  // Initialize TangoSupport context.
+  TangoSupport_initializeLibrary();
+}
 
-  TangoCoordinateFramePair frame_pair;
-  glm::vec3 translation;
-  glm::quat rotation;
-
-  // We need to get the extrinsic transform between the color camera and the
-  // IMU coordinate frames. This matrix is then used to compute the extrinsic
-  // transform between color camera and device: C_T_D = C_T_IMU * IMU_T_D.
-  // Note that the matrix C_T_D is a constant transformation since the hardware
-  // will not change, we use the getPoseAtTime() function to query it once right
-  // after the Tango Service connected and store it for efficiency.
-  frame_pair.base = TANGO_COORDINATE_FRAME_IMU;
-  frame_pair.target = TANGO_COORDINATE_FRAME_DEVICE;
-  ret = TangoService_getPoseAtTime(0.0, frame_pair, &pose_imu_T_device_t0);
-  if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PlaneFittingApplication: Failed to get transform between the IMU and"
-        "device frames. Something is wrong with device extrinsics.");
-    return false;
-  }
-  const glm::mat4 IMU_T_device = tango_gl::conversions::TransformFromArrays(
-      pose_imu_T_device_t0.translation, pose_imu_T_device_t0.orientation);
-
-  // Get color camera with respect to IMU transformation matrix. This matrix is
-  // used to compute the extrinsics between color camera and device:
-  // C_T_D = C_T_IMU * IMU_T_D.
-  frame_pair.base = TANGO_COORDINATE_FRAME_IMU;
-  frame_pair.target = TANGO_COORDINATE_FRAME_CAMERA_COLOR;
-  ret = TangoService_getPoseAtTime(0.0, frame_pair, &pose_imu_T_color_t0);
-  if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PlaneFittingApplication: Failed to get transform between the IMU and"
-        "camera frames. Something is wrong with device extrinsics.");
-    return false;
-  }
-  const glm::mat4 IMU_T_color = tango_gl::conversions::TransformFromArrays(
-      pose_imu_T_color_t0.translation, pose_imu_T_color_t0.orientation);
-
-  // Get depth camera with respect to imu transformation matrix. This matrix is
-  // used to compute the extrinsics between depth camera and device:
-  // C_T_D = C_T_IMU * IMU_T_D.
-  frame_pair.base = TANGO_COORDINATE_FRAME_IMU;
-  frame_pair.target = TANGO_COORDINATE_FRAME_CAMERA_DEPTH;
-  ret = TangoService_getPoseAtTime(0.0, frame_pair, &pose_imu_T_depth_t0);
-  if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PlaneFittingApplication: Failed to get transform between the IMU and"
-        "camera frames. Something is wrong with device extrinsics.");
-    return false;
-  }
-  const glm::mat4 IMU_T_depth = tango_gl::conversions::TransformFromArrays(
-      pose_imu_T_depth_t0.translation, pose_imu_T_depth_t0.orientation);
-
-  device_T_depth_ = glm::inverse(IMU_T_device) * IMU_T_depth;
-  device_T_color_ = glm::inverse(IMU_T_device) * IMU_T_color;
-
-  return true;
+void PlaneFittingApplication::OnPause() {
+  is_service_connected_ = false;
+  is_gl_initialized_ = false;
+  TangoDisconnect();
+  DeleteResources();
 }
 
 void PlaneFittingApplication::TangoDisconnect() { TangoService_disconnect(); }
 
-bool PlaneFittingApplication::InitializeGLContent() {
+void PlaneFittingApplication::OnSurfaceCreated() {
   video_overlay_ = new tango_gl::VideoOverlay();
   point_cloud_renderer_ = new PointCloudRenderer();
   cube_ = new tango_gl::Cube();
   cube_->SetScale(glm::vec3(kCubeScale, kCubeScale, kCubeScale));
   cube_->SetColor(0.7f, 0.7f, 0.7f);
 
-  // The Tango service allows you to connect an OpenGL texture directly to its
-  // RGB and fisheye cameras. This is the most efficient way of receiving
-  // images from the service because it avoids copies. You get access to the
-  // graphic buffer directly. As we are interested in rendering the color image
-  // in our render loop, we will be polling for the color image as needed.
-  TangoErrorType err = TangoService_connectTextureId(
-      TANGO_CAMERA_COLOR, video_overlay_->GetTextureId(), this, nullptr);
-  return err == TANGO_SUCCESS;
+  is_gl_initialized_ = true;
 }
 
 void PlaneFittingApplication::SetRenderDebugPointCloud(bool on) {
   point_cloud_renderer_->SetRenderDebugColors(on);
 }
 
-void PlaneFittingApplication::SetViewPort(int width, int height) {
+void PlaneFittingApplication::OnSurfaceChanged(int width, int height) {
   screen_width_ = static_cast<float>(width);
   screen_height_ = static_cast<float>(height);
 
   glViewport(0, 0, screen_width_, screen_height_);
 }
 
-void PlaneFittingApplication::Render() {
+void PlaneFittingApplication::OnDrawFrame() {
+  // If tracking is lost, further down in this method Scene::Render
+  // will not be called. Prevent flickering that would otherwise
+  // happen by rendering solid black as a fallback.
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
+  if (!is_gl_initialized_ || !is_service_connected_) {
+    return;
+  }
+
   // We need to make sure that we update the texture associated with the color
   // image.
-  if (TangoService_updateTexture(TANGO_CAMERA_COLOR, &last_gpu_timestamp_) !=
-      TANGO_SUCCESS) {
+  if (TangoService_updateTextureExternalOes(
+          TANGO_CAMERA_COLOR, video_overlay_->GetTextureId(),
+          &last_gpu_timestamp_) != TANGO_SUCCESS) {
     LOGE("PlaneFittingApplication: Failed to get a color image.");
     return;
   }
 
   // Querying the GPU color image's frame transformation based its timestamp.
-  TangoPoseData pose_start_service_T_color_gpu;
-  TangoCoordinateFramePair color_gpu_frame_pair;
-  color_gpu_frame_pair.base = TANGO_COORDINATE_FRAME_START_OF_SERVICE;
-  color_gpu_frame_pair.target = TANGO_COORDINATE_FRAME_DEVICE;
-  if (TangoService_getPoseAtTime(last_gpu_timestamp_, color_gpu_frame_pair,
-                                 &pose_start_service_T_color_gpu) !=
-      TANGO_SUCCESS) {
+  TangoMatrixTransformData matrix_transform;
+  TangoSupport_getMatrixTransformAtTime(
+      last_gpu_timestamp_, TANGO_COORDINATE_FRAME_AREA_DESCRIPTION,
+      TANGO_COORDINATE_FRAME_CAMERA_COLOR, TANGO_SUPPORT_ENGINE_OPENGL,
+      TANGO_SUPPORT_ENGINE_OPENGL, ROTATION_0, &matrix_transform);
+  if (matrix_transform.status_code != TANGO_POSE_VALID) {
     LOGE(
-        "PlaneFittingApplication: Could not find a valid pose at time %lf"
-        " for the color camera.",
+        "PlaneFittingApplication: Could not find a valid matrix transform at "
+        "time %lf for the color camera.",
         last_gpu_timestamp_);
-  }
-
-  if (pose_start_service_T_color_gpu.status_code == TANGO_POSE_VALID) {
-    const glm::mat4 start_service_T_device =
-        tango_gl::conversions::TransformFromArrays(
-            pose_start_service_T_color_gpu.translation,
-            pose_start_service_T_color_gpu.orientation);
-
-    const glm::mat4 start_service_T_color_camera =
-        start_service_T_device * device_T_color_;
-
-    GLRender(start_service_T_color_camera);
   } else {
-    LOGE("Invalid pose for gpu color image at time: %lf", last_gpu_timestamp_);
+    const glm::mat4 area_description_T_color_camera =
+        glm::make_mat4(matrix_transform.matrix);
+    GLRender(area_description_T_color_camera);
   }
 }
 
 void PlaneFittingApplication::GLRender(
-    const glm::mat4& start_service_T_color_camera) {
+    const glm::mat4& area_description_T_color_camera) {
   glEnable(GL_CULL_FACE);
 
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -322,28 +318,30 @@ void PlaneFittingApplication::GLRender(
 
   // We want to render from the perspective of the device, so we will set our
   // camera based on the transform that was passed in.
-  glm::mat4 opengl_camera_T_ss = glm::inverse(start_service_T_color_camera *
-                                              color_camera_T_opengl_camera_);
+  glm::mat4 color_camera_T_area_description =
+      glm::inverse(area_description_T_color_camera);
 
   glDisable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
   video_overlay_->Render(glm::mat4(1.0), glm::mat4(1.0));
   glEnable(GL_DEPTH_TEST);
-  UpdateCurrentPointData();
-  const glm::mat4 start_service_T_device_t1 = GetStartServiceTDeviceTransform();
-  const glm::mat4 projection_T_depth =
-      projection_matrix_ar_ * opengl_camera_T_ss * start_service_T_device_t1 *
-      device_T_depth_;
-  const glm::mat4 start_service_T_depth =
-      start_service_T_device_t1 * device_T_depth_;
-  point_cloud_renderer_->Render(projection_T_depth, start_service_T_depth,
-                                front_cloud_);
+
+  TangoPointCloud* point_cloud = nullptr;
+  TangoSupport_getLatestPointCloud(point_cloud_manager_, &point_cloud);
+  if (point_cloud != nullptr) {
+    const glm::mat4 area_description_opengl_T_depth_t1_tango =
+        GetAreaDescriptionTDepthTransform(point_cloud->timestamp);
+    const glm::mat4 projection_T_depth =
+        projection_matrix_ar_ * color_camera_T_area_description *
+        area_description_opengl_T_depth_t1_tango;
+    point_cloud_renderer_->Render(projection_T_depth,
+                                  area_description_opengl_T_depth_t1_tango,
+                                  point_cloud);
+  }
+
   glDisable(GL_BLEND);
 
-  glm::mat4 opengl_camera_T_opengl_world =
-      opengl_camera_T_ss *
-      glm::inverse(tango_gl::conversions::opengl_world_T_tango_world());
-  cube_->Render(projection_matrix_ar_, opengl_camera_T_opengl_world);
+  cube_->Render(projection_matrix_ar_, color_camera_T_area_description);
 }
 
 void PlaneFittingApplication::DeleteResources() {
@@ -357,25 +355,40 @@ void PlaneFittingApplication::DeleteResources() {
 
 // We assume the Java layer ensures this function is called on the GL thread.
 void PlaneFittingApplication::OnTouchEvent(float x, float y) {
-  /// Calculate the conversion from the latest depth camera position to the
-  /// position of the most recent color camera image. This corrects for screen
-  /// lag between the two systems.
-  TangoPoseData pose_color_camera_t0_T_depth_camera_t1;
+  if (!is_gl_initialized_ || !is_service_connected_) {
+    return;
+  }
+
+  // Get the latest point cloud
+  TangoPointCloud* point_cloud = nullptr;
+  TangoSupport_getLatestPointCloud(point_cloud_manager_, &point_cloud);
+  if (point_cloud == nullptr) {
+    return;
+  }
+
+  // Calculate the conversion from the latest color camera position to the
+  // most recent depth camera position. This corrects for screen lag between
+  // the two systems.
+  TangoPoseData pose_depth_camera_t0_T_color_camera_t1;
   int ret = TangoSupport_calculateRelativePose(
+      point_cloud->timestamp, TANGO_COORDINATE_FRAME_CAMERA_DEPTH,
       last_gpu_timestamp_, TANGO_COORDINATE_FRAME_CAMERA_COLOR,
-      front_cloud_->timestamp, TANGO_COORDINATE_FRAME_CAMERA_DEPTH,
-      &pose_color_camera_t0_T_depth_camera_t1);
+      &pose_depth_camera_t0_T_color_camera_t1);
   if (ret != TANGO_SUCCESS) {
     LOGE("%s: could not calculate relative pose", __func__);
     return;
   }
   glm::vec2 uv(x / screen_width_, y / screen_height_);
 
+  double identity_translation[3] = {0.0, 0.0, 0.0};
+  double identity_orientation[4] = {0.0, 0.0, 0.0, 1.0};
   glm::dvec3 double_depth_position;
   glm::dvec4 double_depth_plane_equation;
-  if (TangoSupport_fitPlaneModelNearClick(
-          front_cloud_, &color_camera_intrinsics_,
-          &pose_color_camera_t0_T_depth_camera_t1, glm::value_ptr(uv),
+  if (TangoSupport_fitPlaneModelNearPoint(
+          point_cloud, identity_translation, identity_orientation,
+          glm::value_ptr(uv),
+          pose_depth_camera_t0_T_color_camera_t1.translation,
+          pose_depth_camera_t0_T_color_camera_t1.orientation,
           glm::value_ptr(double_depth_position),
           glm::value_ptr(double_depth_plane_equation)) != TANGO_SUCCESS) {
     return;  // Assume error has already been reported.
@@ -386,21 +399,20 @@ void PlaneFittingApplication::OnTouchEvent(float x, float y) {
   const glm::vec4 depth_plane_equation =
       static_cast<glm::vec4>(double_depth_plane_equation);
 
-  const glm::mat4 opengl_world_T_depth = opengl_world_T_start_service_ *
-                                         GetStartServiceTDeviceTransform() *
-                                         device_T_depth_;
+  const glm::mat4 area_description_opengl_T_depth_tango =
+      GetAreaDescriptionTDepthTransform(point_cloud->timestamp);
 
-  // Transform to world coordinates
-  const glm::vec4 world_position =
-      opengl_world_T_depth * glm::vec4(depth_position, 1.0f);
+  // Transform to Area Description coordinates
+  const glm::vec4 area_description_position =
+      area_description_opengl_T_depth_tango * glm::vec4(depth_position, 1.0f);
 
-  glm::vec4 world_plane_equation;
-  PlaneTransform(depth_plane_equation, opengl_world_T_depth,
-                 &world_plane_equation);
+  glm::vec4 area_description_plane_equation;
+  PlaneTransform(depth_plane_equation, area_description_opengl_T_depth_tango,
+                 &area_description_plane_equation);
 
-  point_cloud_renderer_->SetPlaneEquation(world_plane_equation);
+  point_cloud_renderer_->SetPlaneEquation(area_description_plane_equation);
 
-  const glm::vec3 plane_normal(world_plane_equation);
+  const glm::vec3 plane_normal(area_description_plane_equation);
 
   // Use world up as the second vector, unless they are nearly parallel.
   // In that case use world +Z.
@@ -421,25 +433,40 @@ void PlaneFittingApplication::OnTouchEvent(float x, float y) {
   const glm::quat rotation = glm::toQuat(rotation_matrix);
 
   cube_->SetRotation(rotation);
-  cube_->SetPosition(glm::vec3(world_position) + plane_normal * kCubeScale);
+  cube_->SetPosition(glm::vec3(area_description_position) +
+                     plane_normal * kCubeScale);
 }
 
-glm::mat4 PlaneFittingApplication::GetStartServiceTDeviceTransform() {
-  TangoCoordinateFramePair frame_pair;
-  frame_pair.base = TANGO_COORDINATE_FRAME_START_OF_SERVICE;
-  frame_pair.target = TANGO_COORDINATE_FRAME_DEVICE;
-  TangoPoseData pose_start_service_T_device_t1;
+glm::mat4 PlaneFittingApplication::GetAreaDescriptionTDepthTransform(
+    double timestamp) {
+  glm::mat4 area_description_opengl_T_depth_tango;
+  TangoMatrixTransformData matrix_transform;
 
-  TangoService_getPoseAtTime(front_cloud_->timestamp, frame_pair,
-                             &pose_start_service_T_device_t1);
-
-  return tango_gl::conversions::TransformFromArrays(
-      pose_start_service_T_device_t1.translation,
-      pose_start_service_T_device_t1.orientation);
-}
-
-void PlaneFittingApplication::UpdateCurrentPointData() {
-  TangoSupport_getLatestPointCloud(point_cloud_manager_, &front_cloud_);
+  // When drift correction mode is enabled in config file, we need to query
+  // the device with respect to Area Description pose in order to use the
+  // drift corrected pose.
+  //
+  // Note that if you don't want to use the drift corrected pose, the
+  // normal device with respect to start of service pose is still available.
+  TangoSupport_getMatrixTransformAtTime(
+      timestamp, TANGO_COORDINATE_FRAME_AREA_DESCRIPTION,
+      TANGO_COORDINATE_FRAME_CAMERA_DEPTH, TANGO_SUPPORT_ENGINE_OPENGL,
+      TANGO_SUPPORT_ENGINE_TANGO, ROTATION_0, &matrix_transform);
+  if (matrix_transform.status_code != TANGO_POSE_VALID) {
+    // When the pose status is not valid, it indicates the tracking has
+    // been lost. In this case, we simply stop rendering.
+    //
+    // This is also the place to display UI to suggest the user walk
+    // to recover tracking.
+    LOGE(
+        "PlaneFittingApplication: Could not find a valid matrix transform at "
+        "time %lf for the color camera.",
+        last_gpu_timestamp_);
+  } else {
+    area_description_opengl_T_depth_tango =
+        glm::make_mat4(matrix_transform.matrix);
+  }
+  return area_description_opengl_T_depth_tango;
 }
 
 }  // namespace tango_plane_fitting

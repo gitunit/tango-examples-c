@@ -23,71 +23,65 @@ static tango_point_to_point::PointToPointApplication app;
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-JNIEXPORT jboolean JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_checkTangoVersion(
-    JNIEnv* env, jobject, jobject activity, jint min_tango_version) {
-  return app.CheckTangoVersion(env, activity, min_tango_version);
+JNIEXPORT void JNICALL
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onCreate(
+    JNIEnv* env, jobject, jobject activity) {
+  app.OnCreate(env, activity);
 }
 
 JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_onTangoServiceConnected(
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onPause(
+    JNIEnv*, jobject) {
+  app.OnPause();
+}
+
+JNIEXPORT void JNICALL
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onTangoServiceConnected(
     JNIEnv* env, jobject /*obj*/, jobject binder) {
   app.OnTangoServiceConnected(env, binder);
 }
 
-JNIEXPORT jint JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_tangoSetupAndConnect(
+JNIEXPORT void JNICALL
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onGlSurfaceCreated(
     JNIEnv* /*env*/, jobject /*obj*/) {
-  return app.TangoSetupAndConnect();
+  app.OnSurfaceCreated();
 }
 
 JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_tangoDisconnect(
-    JNIEnv* /*env*/, jobject /*obj*/) {
-  app.TangoDisconnect();
-}
-
-JNIEXPORT jint JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_initializeGLContent(
-    JNIEnv* /*env*/, jobject /*obj*/) {
-  return app.InitializeGLContent();
-}
-
-JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_setUpsampleViaBilateralFiltering(
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_setUpsampleViaBilateralFiltering(
     JNIEnv* /*env*/, jobject /*obj*/, jboolean on) {
   app.SetUpsampleViaBilateralFiltering(on);
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_getPointSeparation(
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_getPointSeparation(
     JNIEnv* env, jobject) {
   return (env)->NewStringUTF(app.GetPointSeparation().c_str());
 }
 
 JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_setViewPort(
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onGlSurfaceChanged(
     JNIEnv* /*env*/, jobject /*obj*/, jint width, jint height) {
-  app.SetViewPort(width, height);
+  app.OnSurfaceChanged(width, height);
 }
 
 JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_render(
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onGlSurfaceDrawFrame(
     JNIEnv* /*env*/, jobject /*obj*/) {
-  app.Render();
+  app.OnDrawFrame();
 }
 
 JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_deleteResources(
-    JNIEnv* /*env*/, jobject /*obj*/) {
-  app.DeleteResources();
-}
-
-JNIEXPORT void JNICALL
-Java_com_projecttango_examples_cpp_pointtopoint_JNIInterface_onTouchEvent(
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onTouchEvent(
     JNIEnv* /*env*/, jobject /*obj*/, jfloat x, jfloat y) {
   app.OnTouchEvent(x, y);
+}
+
+JNIEXPORT void JNICALL
+Java_com_projecttango_examples_cpp_pointtopoint_TangoJNINative_onDisplayChanged(
+    JNIEnv* /*env*/, jobject /*obj*/, jint display_rotation,
+    jint color_camera_rotation) {
+  app.OnDisplayChanged(display_rotation, color_camera_rotation);
 }
 
 #ifdef __cplusplus

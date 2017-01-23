@@ -19,6 +19,7 @@
 
 #include <jni.h>
 
+#include <atomic>
 #include <tango_client_api.h>
 #include <tango-gl/cube.h>
 #include <tango-gl/util.h>
@@ -40,45 +41,47 @@ class PlaneFittingApplication {
   PlaneFittingApplication();
   ~PlaneFittingApplication();
 
-  // Check that the installed version of the Tango API is up to date
-  // and initialize other data.
+  // OnCreate() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In the OnCreate
+  // function, we are only checking the Tango Core's version.
   //
-  // @return returns true if the application version is compatible with the
-  //         Tango Core version.
-  bool CheckTangoVersion(JNIEnv* env, jobject caller_activity,
-                         int min_tango_version);
+  // @param env, java environment parameter OnCreate is being called.
+  // @param caller_activity, caller of this function.
+  // @param activity_orientation, orienation param for the activity.
+  // @param sensor_orientation, orientation param for the color camera sensor.
+  void OnCreate(JNIEnv* env, jobject caller_activity);
+
+  // OnPause() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In our application,
+  // we disconnect Tango Service and free the Tango configuration
+  // file. It is important to disconnect Tango Service and release
+  // the coresponding resources in the OnPause() callback from
+  // Android, otherwise, this application will hold on to the Tango
+  // resources and other application will not be able to connect to
+  // Tango Service.
+  void OnPause();
 
   // Called when Tango Service is connected successfully.
   void OnTangoServiceConnected(JNIEnv* env, jobject binder);
 
-  // Setup configuration options for Project Tango service, register
-  // for callbacks, and connect to the Project Tango service.
-  bool TangoSetupAndConnect();
-
-  // Disconnect from the Project Tango service.
-  void TangoDisconnect();
-
   // Create OpenGL state and connect to the color camera texture.
-  bool InitializeGLContent();
+  void OnSurfaceCreated();
 
   // Configure whether to display depth data for debugging.
   void SetRenderDebugPointCloud(bool on);
 
   // Configure the viewport of the GL view.
-  void SetViewPort(int width, int height);
+  void OnSurfaceChanged(int width, int height);
 
   // Get current camera position and render.
-  void Render();
-
-  // Delete the GL resources.
-  void DeleteResources();
+  void OnDrawFrame();
 
   //
   // Callback for point clouds that come in from the Tango service.
   //
-  // @param xyz_ij The point cloud returned by the service.
+  // @param point_cloud The point cloud returned by the service.
   //
-  void OnXYZijAvailable(const TangoXYZij* xyz_ij);
+  void OnPointCloudAvailable(const TangoPointCloud* point_cloud);
 
   //
   // Callback for touch events to fit a plane and place an object.  The Java
@@ -95,9 +98,32 @@ class PlaneFittingApplication {
   // Update the current point data.
   void UpdateCurrentPointData();
 
-  // return pose for device position with respect to
-  // start of service.
-  glm::mat4 GetStartServiceTDeviceTransform();
+  // Setup the configuration file for the Tango Service. We'll also see whether
+  // we'd like auto-recover enabled.
+  void TangoSetupConfig();
+
+  // Connect the OnXYZijAvailable and OnTextureAvailable callbacks.
+  void TangoConnectCallbacks();
+
+  // Connect to Tango Service.
+  // This function will start the Tango Service pipeline, in this case, it will
+  // start Motion Tracking.
+  void TangoConnect();
+
+  // Disconnect from the Project Tango service.
+  void TangoDisconnect();
+
+  // Delete the GL resources.
+  void DeleteResources();
+
+  // Return transform for depth camera in Tango coordinate convention with
+  // respect to
+  // Area Description in OpenGL coordinate convention. The reason to switch from
+  // one convention to
+  // the other is an optimization that allow us to avoid transforming the depth
+  // points into OpenGL
+  // coordinate frame.
+  glm::mat4 GetAreaDescriptionTDepthTransform(double timestamp);
 
   TangoConfig tango_config_;
   TangoCameraIntrinsics color_camera_intrinsics_;
@@ -116,20 +142,14 @@ class PlaneFittingApplication {
   double last_gpu_timestamp_;
 
   // Cached transforms
-  // Pose of color camera with respect to device.
-  glm::mat4 device_T_color_;
-  // Pose of depth camera with respect to device.
-  glm::mat4 device_T_depth_;
-  // Start of service with respect to OpenGL world.
-  glm::mat4 opengl_world_T_start_service_;
-  // OpenGL camera with respect to color camera.
-  glm::mat4 color_camera_T_opengl_camera_;
   // OpenGL projection matrix.
   glm::mat4 projection_matrix_ar_;
 
+  std::atomic<bool> is_service_connected_;
+  std::atomic<bool> is_gl_initialized_;
+
   // Point data manager.
   TangoSupportPointCloudManager* point_cloud_manager_;
-  TangoXYZij* front_cloud_;
 };
 
 }  // namespace tango_plane_fitting

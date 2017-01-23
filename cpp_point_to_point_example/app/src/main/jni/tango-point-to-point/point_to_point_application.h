@@ -17,10 +17,12 @@
 #ifndef TANGO_POINT_TO_POINT_POINT_TO_POINT_APPLICATION_H_
 #define TANGO_POINT_TO_POINT_POINT_TO_POINT_APPLICATION_H_
 
+#include <atomic>
 #include <jni.h>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <tango_client_api.h>
 #include <tango_support_api.h>
@@ -43,33 +45,38 @@ class PointToPointApplication {
   PointToPointApplication();
   ~PointToPointApplication();
 
-  // Make sure tango core version is up to date
-  bool CheckTangoVersion(JNIEnv* env, jobject activity, int min_tango_version);
+  // OnCreate() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In the OnCreate
+  // function, we are only checking the Tango Core's version.
+  //
+  // @param env, java environment parameter OnCreate is being called.
+  // @param caller_activity, caller of this function.
+  void OnCreate(JNIEnv* env, jobject caller_activity);
+
+  // OnPause() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In our application,
+  // we disconnect Tango Service and free the Tango configuration
+  // file. It is important to disconnect Tango Service and release
+  // the coresponding resources in the OnPause() callback from
+  // Android, otherwise, this application will hold on to the Tango
+  // resources and other application will not be able to connect to
+  // Tango Service.
+  void OnPause();
 
   // Called when Tango Service is connected successfully.
   void OnTangoServiceConnected(JNIEnv* env, jobject binder);
 
-  // Setup configuration options for Project Tango service, register
-  // for callbacks, and connect to the Project Tango service.
-  int TangoSetupAndConnect();
-
-  // Disconnect from the Project Tango service.
-  void TangoDisconnect();
-
   // Create OpenGL state and connect to the color camera texture.
-  int InitializeGLContent();
+  void OnSurfaceCreated();
 
   // Configure which method to use for upsampling.
   void SetUpsampleViaBilateralFiltering(bool on);
 
   // Configure the viewport of the GL view.
-  void SetViewPort(int width, int height);
+  void OnSurfaceChanged(int width, int height);
 
   // Get current camera position and render.
-  void Render();
-
-  // Delete the allocate resources.
-  void DeleteResources();
+  void OnDrawFrame();
 
   // Return the distance between the two selected points.
   std::string GetPointSeparation();
@@ -77,9 +84,9 @@ class PointToPointApplication {
   //
   // Callback for point clouds that come in from the Tango service.
   //
-  // @param xyz_ij The point cloud returned by the service.
+  // @param point_cloud The point cloud returned by the service.
   //
-  void OnXYZijAvailable(const TangoXYZij* xyz_ij);
+  void OnPointCloudAvailable(const TangoPointCloud* point_cloud);
 
   //
   // Callback for image buffers that come in from the Tango service.
@@ -97,20 +104,54 @@ class PointToPointApplication {
   // @param y The requested y coordinate in screen space of the window.
   void OnTouchEvent(float x, float y);
 
+  //
+  // Callback for display change event, we use this function to detect display
+  // orientation change.
+  //
+  // @param display_rotation, the rotation index of the display. Same as the
+  // Android display enum value, see here:
+  // https://developer.android.com/reference/android/view/Display.html#getRotation()
+  // @param color_camera_rotation, the rotation index of color camera
+  // orientation.
+  // Same as the Android sensor rotation enum value, see here:
+  // https://developer.android.com/reference/android/hardware/Camera.CameraInfo.html#orientation
+  void OnDisplayChanged(int display_rotation, int color_camera_rotation);
+
  private:
   // Details of rendering to OpenGL after determining transforms.
-  void GLRender(const TangoPoseData& pose_start_service_T_device);
-
-  // Get the x,y,z point of the touch location.
-  bool GetDepthAtPoint(const float uv[2], float xyz[3],
-                       const TangoPoseData& color_camera_T_point_cloud);
+  void GLRender(const glm::mat4& opengl_ss_T_color_opengl);
 
   // Update the segment based on a new touch position.
   void UpdateSegment(glm::vec4 world_position);
 
-  // return pose for device position with respect to
-  // start of service.
-  TangoErrorType GetStartServiceTDevicePose(TangoPoseData* pose);
+  // Setup the configuration file for the Tango Service. We'll also see whether
+  // we'd like auto-recover enabled.
+  void TangoSetupConfig();
+
+  // Connect the OnTextureAvailable and OnTangoEvent callbacks.
+  void TangoConnectCallbacks();
+
+  // Connect to Tango Service.
+  // This function will start the Tango Service pipeline, in this case, it will
+  // start Motion Tracking.
+  void TangoConnect();
+
+  // Disconnect from the Project Tango service.
+  void TangoDisconnect();
+
+  // Delete the allocate resources.
+  void DeleteResources();
+
+  // Return transform for depth camera in Tango coordinate convention with
+  // respect to
+  // Start of Service in OpenGL coordinate convention. The reason to switch from
+  // one convention to
+  // the other is an optimization that allow us to avoid transforming the depth
+  // points into OpenGL
+  // coordinate frame.
+  glm::mat4 GetStartServiceTColorPose(const double& image_time);
+
+  void SetViewportAndProjection();
 
   TangoConfig tango_config_;
   TangoCameraIntrinsics color_camera_intrinsics_;
@@ -119,24 +160,20 @@ class PointToPointApplication {
   tango_gl::VideoOverlay* video_overlay_;
 
   // The dimensions of the render window.
-  GLsizei screen_width_;
-  GLsizei screen_height_;
+  float screen_width_;
+  float screen_height_;
 
   double last_gpu_timestamp_;
 
   // Cached transforms
-  // Start of service with respect to OpenGL world.
-  glm::mat4 opengl_world_T_start_service_;
   // OpenGL projection matrix.
   glm::mat4 projection_matrix_ar_;
 
   // Point data manager.
   TangoSupportPointCloudManager* point_cloud_manager_;
-  TangoXYZij* front_cloud_;
 
   // Image data manager.
   TangoSupportImageBufferManager* image_buffer_manager_;
-  TangoImageBuffer* image_buffer_;
 
   // The depth interpolator class.
   TangoSupportDepthInterpolator* interpolator_;
@@ -164,6 +201,14 @@ class PointToPointApplication {
 
   // Are both points defined?
   bool segment_is_drawable_;
+
+  std::atomic<bool> is_service_connected_;
+  std::atomic<bool> is_gl_initialized_;
+
+  // Both of these orientation is used for handling display rotation in portrait
+  // or landscape.
+  TangoSupportDisplayRotation display_rotation_;
+  TangoSupportDisplayRotation color_camera_to_display_rotation_;
 };
 
 }  // namespace tango_point_to_point

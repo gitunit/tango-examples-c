@@ -34,7 +34,6 @@ import android.view.View.OnClickListener;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageButton;
-import android.widget.Toast;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -64,14 +63,7 @@ public class MainActivity extends Activity {
   // Tango Service connection.
   ServiceConnection mTangoServiceConnection = new ServiceConnection() {
       public void onServiceConnected(ComponentName name, IBinder service) {
-        JNIInterface.onTangoServiceConnected(service);
-          
-        // Setup the configuration of the Tango Service.
-        if (!JNIInterface.tangoSetupAndConnect()) {
-          Log.e(TAG, "Failed to set config and connect.");
-          finish();
-          return;
-        }
+        TangoJNINative.onTangoServiceConnected(service);
       }
 
       public void onServiceDisconnected(ComponentName name) {
@@ -92,7 +84,7 @@ public class MainActivity extends Activity {
   // Update settings of the app depending on the settings last saved.
   private void updatePreferences(SharedPreferences prefs, String key) {
     if (key.equals(getString(R.string.key_debug_point_cloud))) {
-      JNIInterface.setRenderDebugPointCloud(prefs.getBoolean(key, false));
+      TangoJNINative.setRenderDebugPointCloud(prefs.getBoolean(key, false));
     } else {
       Log.w(TAG, "Unknown preference: " + key);
     }
@@ -101,17 +93,10 @@ public class MainActivity extends Activity {
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    TangoJNINative.onCreate(this);
 
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                          WindowManager.LayoutParams.FLAG_FULLSCREEN);
-
-    // Check that the installed version of the Tango Core is up to date.
-    if (!JNIInterface.checkTangoVersion(this, MIN_TANGO_CORE_VERSION)) {
-      Toast.makeText(this, "Tango Core out of date, please update in Play Store",
-                     Toast.LENGTH_LONG).show();
-      finish();
-      return;
-    }
 
     setContentView(R.layout.activity_main);
 
@@ -132,7 +117,7 @@ public class MainActivity extends Activity {
       mGLView.queueEvent(new Runnable() {
           @Override
           public void run() {
-            JNIInterface.onTouchEvent(event.getX(), event.getY());
+            TangoJNINative.onTouchEvent(event.getX(), event.getY());
           }
         });
     }
@@ -167,19 +152,19 @@ public class MainActivity extends Activity {
   private void configureSettingsButton() {
     mSettingsButton = (Button) findViewById(R.id.button_settings);
     mSettingsButton.setOnClickListener(new OnClickListener() {
-        @Override
-        public void onClick(View v) {
-          SettingsFragment settingsFrag = new SettingsFragment();
-          FragmentManager manager = getFragmentManager();
-          FragmentTransaction transaction = manager.beginTransaction();
-          transaction.replace(R.id.drawer_layout, settingsFrag);
-          transaction.addToBackStack(null);
-          transaction.commit();
-          if (mDrawerLayout.isDrawerOpen(Gravity.START)) {
-            mDrawerLayout.closeDrawer(Gravity.START);
-          }
+      @Override
+      public void onClick(View v) {
+        SettingsFragment settingsFrag = new SettingsFragment();
+        FragmentManager manager = getFragmentManager();
+        FragmentTransaction transaction = manager.beginTransaction();
+        transaction.replace(R.id.drawer_layout, settingsFrag);
+        transaction.addToBackStack(null);
+        transaction.commit();
+        if (mDrawerLayout.isDrawerOpen(Gravity.START)) {
+          mDrawerLayout.closeDrawer(Gravity.START);
         }
-      });
+      }
+    });
   }
 
   @Override
@@ -194,19 +179,12 @@ public class MainActivity extends Activity {
   protected void onPause() {
     super.onPause();
     mGLView.onPause();
-    JNIInterface.deleteResources();
-
-    // Disconnect from Tango Service, release all the resources that the app is
-    // holding from Tango Service.
-    JNIInterface.tangoDisconnect();
+    TangoJNINative.onPause();
     unbindService(mTangoServiceConnection);
   }
 
   public void surfaceCreated() {
-    if (!JNIInterface.initializeGLContent()) {
-      Log.e(TAG, "Failed to connect texture.");
-    }
-
+    TangoJNINative.onGlSurfaceCreated();
     // Update the last saved settings after the surface is created.
     Map<String, ?> allKeys = mPreferences.getAll();
     Iterator i = allKeys.entrySet().iterator();

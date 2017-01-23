@@ -53,48 +53,36 @@ class SynchronizationApplication {
   SynchronizationApplication();
   ~SynchronizationApplication();
 
-  // Check that the installed version of the Tango API is up to date
-  // and initialize other data.
+  // OnCreate() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In the OnCreate
+  // function, we are only checking the Tango Core's version.
   //
-  // @return returns true if the application version is compatible with the
-  //         Tango Core version.
-  bool CheckTangoVersion(JNIEnv* env, jobject activity, int min_tango_version);
+  // @param env, java environment parameter OnCreate is being called.
+  // @param caller_activity, caller of this function.
+  void OnCreate(JNIEnv* env, jobject caller_activity);
+
+  // OnPause() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In our application,
+  // we disconnect Tango Service and free the Tango configuration
+  // file. It is important to disconnect Tango Service and release
+  // the coresponding resources in the OnPause() callback from
+  // Android, otherwise, this application will hold on to the Tango
+  // resources and other application will not be able to connect to
+  // Tango Service.
+  void OnPause();
 
   // Called when Tango Service is connected successfully.
   void OnTangoServiceConnected(JNIEnv* env, jobject binder);
 
-  // Setup the configuration file for the Tango Service. .
-  bool TangoSetupConfig();
-
-  // Associate the texture generated from an Opengl context to which the color
-  // image will be updated to.
-  bool TangoConnectTexture();
-
-  // Sets the callbacks for OnXYZijAvailable
-  bool TangoConnectCallbacks();
-
-  // Connect to Tango Service.
-  // This function will start the Tango Service pipeline, in this case, it will
-  // start Depth Sensing callbacks.
-  bool TangoConnect();
-
-  // Queries and sets the camera transforms between different sensors of
-  // Project Tango Device that are required to project Point cloud onto
-  // Image plane.
-  bool TangoSetIntrinsicsAndExtrinsics();
-
-  // Disconnect from Tango Service.
-  void TangoDisconnect();
-
   // Inititalizes all the OpenGL resources required to render a Depth Image on
   // Top of an RGB image.
-  void InitializeGLContent();
+  void OnSurfaceCreated();
 
   // Setup the view port width and height.
-  void SetViewPort(int width, int height);
+  void OnSurfaceChanged(int width, int height);
 
   // Main Render loop.
-  void Render();
+  void OnDrawFrame();
 
   // Set the transparency of Depth Image.
   void SetDepthAlphaValue(float alpha);
@@ -102,13 +90,45 @@ class SynchronizationApplication {
   // Set whether to use GPU or CPU upsampling
   void SetGPUUpsample(bool on);
 
+  // Callback for display change event, we use this function to detect display
+  // orientation change.
+  //
+  // @param display_rotation, the rotation index of the display. Same as the
+  // Android display enum value, see here:
+  // https://developer.android.com/reference/android/view/Display.html#getRotation()
+  // @param color_camera_rotation, the rotation index of color camera
+  // orientation.
+  // Same as the Android sensor rotation enum value, see here:
+  // https://developer.android.com/reference/android/hardware/Camera.CameraInfo.html#orientation
+  void OnDisplayChanged(int display_rotation, int color_camera_rotation);
+
   // Callback for point clouds that come in from the Tango service.
   //
-  // @param xyz_ij The point cloud returned by the service.
+  // @param point_cloud The point cloud returned by the service.
   //
-  void OnXYZijAvailable(const TangoXYZij* xyz_ij);
+  void OnPointCloudAvailable(const TangoPointCloud* point_cloud);
 
  private:
+  // Setup the configuration file for the Tango Service. .
+  void TangoSetupConfig();
+
+  // Associate the texture generated from an Opengl context to which the color
+  // image will be updated to.
+  bool TangoConnectTexture();
+
+  // Sets the callbacks for OnXYZijAvailable
+  void TangoConnectCallbacks();
+
+  // Connect to Tango Service.
+  // This function will start the Tango Service pipeline, in this case, it will
+  // start Depth Sensing callbacks.
+  void TangoConnect();
+
+  // Queries and sets the camera transforms between different sensors of
+  // Project Tango Device that are required to project Point cloud onto
+  // Image plane.
+  void TangoSetIntrinsics();
+
   // RGB image
   ColorImage color_image_;
 
@@ -123,20 +143,16 @@ class SynchronizationApplication {
   // this example.
   TangoConfig tango_config_;
 
-  // OpenGL to Start of Service
-  glm::mat4 OW_T_SS_;
-  float screen_width_;
-  float screen_height_;
-
   // The point_cloud_manager allows for thread safe reading and
   // writing of the point cloud data.
   TangoSupportPointCloudManager* point_cloud_manager_;
 
-  // This TangoXYZij* points to the most recently produced
-  // point cloud data which should be rendered.
-  TangoXYZij* render_buffer_;
-
   bool gpu_upsample_;
+
+  bool is_service_connected_;
+  bool is_gl_initialized_;
+
+  TangoSupportDisplayRotation color_camera_to_display_rotation_;
 };
 }  // namespace rgb_depth_sync
 

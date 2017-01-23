@@ -21,6 +21,8 @@
 #include <unordered_map>
 #include <GLES2/gl2.h>
 
+#include <tango-gl/texture.h>
+
 #include "glm/glm.hpp"
 
 namespace tango_gl {
@@ -52,6 +54,9 @@ class StaticMesh {
 
   // Indices for the mesh. Required.
   std::vector<uint32_t> indices;
+
+  // UV coords for texture
+  std::vector<glm::vec2> uv;
 };
 
 // Describes how to draw a mesh.
@@ -82,6 +87,9 @@ class Material {
   // parameter was found and set.
   bool SetParam(const char* uniform_name, const glm::vec4& vals);
 
+  // Set a texture parameter for this material.
+  bool SetParam(const char* uniform_name, Texture* texture);
+
   // Bind all parameters for this material to GL state.
   void BindParams() const;
 
@@ -97,11 +105,20 @@ class Material {
   // Get the shader program's color attribute index.
   GLint GetAttribColors() const { return attrib_colors_; }
 
+  // Get the UVs coords attribute of the texture
+  GLint GetAttribUVs() const { return attrib_uv_; }
+
   // Get the shader program's Model-View-Projection matrix uniform index.
   GLint GetUniformModelViewProjMatrix() const { return uniform_mvp_mat_; }
 
   // Get the shader program's Model-View matrix uniform index.
   GLint GetUniformModelViewMatrix() const { return uniform_mv_mat_; }
+
+  // Get the shader program's Model matrix uniform index.
+  GLint GetUniformModelMatrix() const { return uniform_m_mat_; }
+
+  // Get the shader program's Normal matrix uniform index.
+  GLint GetUniformNormalMatrix() const { return uniform_normal_mat_; }
 
  private:
   // Set the shader for this material to the fallback shader.  This
@@ -128,6 +145,9 @@ class Material {
   // Current shader program's vertex color attribute index.
   GLint attrib_colors_;
 
+  // Current shader program's texture coords attribute index.
+  GLint attrib_uv_;
+
   // Current shader program's Model-View-Projection matrix uniform
   // index.
   GLint uniform_mvp_mat_;
@@ -135,11 +155,20 @@ class Material {
   // Current shader program's Model-View matrix uniform index.
   GLint uniform_mv_mat_;
 
+  // Current shader program's Model matrix uniform index.
+  GLint uniform_m_mat_;
+
+  // Current shader program's Normal matrix uniform index.
+  GLint uniform_normal_mat_;
+
   // A hash table of float parameters.
   std::unordered_map<GLint, float> params_float_;
 
   // A hash table of vec4 parameters.
   std::unordered_map<GLint, glm::vec4> params_vec4_;
+
+  // A hash table of Texture pointers parameters.
+  std::unordered_map<GLint, Texture*> params_texture_;
 };
 
 // Draw a thing to the screen.

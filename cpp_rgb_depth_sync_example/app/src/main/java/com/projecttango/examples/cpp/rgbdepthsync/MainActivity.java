@@ -20,6 +20,8 @@ import android.app.Activity;
 import android.content.ComponentName;
 import android.content.ServiceConnection;
 import android.graphics.Point;
+import android.hardware.Camera;
+import android.hardware.display.DisplayManager;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -43,6 +45,9 @@ public class MainActivity extends Activity {
   // The minimum Tango Core version required from this application.
   private static final int MIN_TANGO_CORE_VERSION = 9377;
 
+  // For all current Tango devices, color camera is in the camera id 0.
+  private static final int COLOR_CAMERA_ID = 0;
+
   private GLSurfaceRenderer mRenderer;
   private GLSurfaceView mGLView;
 
@@ -54,26 +59,8 @@ public class MainActivity extends Activity {
   // Tango Service connection.
   ServiceConnection mTangoServiceConnection = new ServiceConnection() {
       public void onServiceConnected(ComponentName name, IBinder service) {
-        JNIInterface.onTangoServiceConnected(service);
-        if (!JNIInterface.tangoSetupConfig()) {
-          Log.e(TAG, "Failed to set config.");
-          finish();
-        }
-
-        if (!JNIInterface.tangoConnectCallbacks()) {
-          Log.e(TAG, "Failed to set connect callbacks.");
-          finish();
-        }
-
-        if (!JNIInterface.tangoConnect()) {
-          Log.e(TAG, "Failed to set connect service.");
-          finish();
-        }
-
-        if (!JNIInterface.tangoSetIntrinsicsAndExtrinsics()) {
-          Log.e(TAG, "Failed to set extrinsics and intrinsics.");
-          finish();
-        }
+        TangoJNINative.onTangoServiceConnected(service);
+        setAndroidOrientation();
       }
 
       public void onServiceDisconnected(ComponentName name) {
@@ -86,7 +73,7 @@ public class MainActivity extends Activity {
     @Override
     public void onProgressChanged(SeekBar seekBar, int progress,
                                   boolean fromUser) {
-      JNIInterface.setDepthAlphaValue((float) progress / (float) seekBar.getMax());
+      TangoJNINative.setDepthAlphaValue((float) progress / (float) seekBar.getMax());
     }
 
     @Override
@@ -103,10 +90,10 @@ public class MainActivity extends Activity {
         if (isChecked) {
           float progress = mDepthOverlaySeekbar.getProgress();
           float max = mDepthOverlaySeekbar.getMax();
-          JNIInterface.setDepthAlphaValue(progress / max);
+          TangoJNINative.setDepthAlphaValue(progress / max);
           mDepthOverlaySeekbar.setVisibility(View.VISIBLE);
         } else {
-          JNIInterface.setDepthAlphaValue(0.0f);
+          TangoJNINative.setDepthAlphaValue(0.0f);
           mDepthOverlaySeekbar.setVisibility(View.GONE);
         }
       }
@@ -116,7 +103,7 @@ public class MainActivity extends Activity {
   private class GPUUpsampleListener implements CheckBox.OnCheckedChangeListener {
     @Override
     public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-      JNIInterface.setGPUUpsample(isChecked);
+      TangoJNINative.setGPUUpsample(isChecked);
     }
   }
 
@@ -128,8 +115,28 @@ public class MainActivity extends Activity {
     Point size = new Point();
     display.getSize(size);
 
+    DisplayManager displayManager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+    if (displayManager != null) {
+      displayManager.registerDisplayListener(new DisplayManager.DisplayListener() {
+        @Override
+        public void onDisplayAdded(int displayId) {
+
+        }
+
+        @Override
+        public void onDisplayChanged(int displayId) {
+          synchronized (this) {
+            setAndroidOrientation();
+          }
+        }
+
+        @Override
+        public void onDisplayRemoved(int displayId) {}
+      }, null);
+    }
+
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                         WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
     setContentView(R.layout.activity_main);
 
@@ -151,13 +158,7 @@ public class MainActivity extends Activity {
     mRenderer = new GLSurfaceRenderer(this);
     mGLView.setRenderer(mRenderer);
 
-    // Check that the installed version of the Tango Core is up to date.
-    if (!JNIInterface.checkTangoVersion(this, MIN_TANGO_CORE_VERSION)) {
-      Toast.makeText(this, "Tango Core out of date, please update in Play Store",
-                     Toast.LENGTH_LONG).show();
-      finish();
-      return;
-    }
+    TangoJNINative.onCreate(this);
   }
 
   @Override
@@ -173,15 +174,22 @@ public class MainActivity extends Activity {
   protected void onPause() {
     super.onPause();
     mGLView.onPause();
-    JNIInterface.tangoDisconnect();
+    TangoJNINative.onPause();
     unbindService(mTangoServiceConnection);
   }
 
   public void surfaceCreated() {
-    JNIInterface.initializeGLContent();
-    if (!JNIInterface.tangoConnectTexture()) {
-      Log.e(TAG, "Failed to connect texture.");
-      finish();
-    }
+    TangoJNINative.onGlSurfaceCreated();
+  }
+
+  // Pass device's camera sensor rotation and display rotation to native layer.
+  // These two parameter are important for Tango to render video overlay and
+  // virtual objects in the correct device orientation.
+  private void setAndroidOrientation() {
+    Display display = getWindowManager().getDefaultDisplay();
+    Camera.CameraInfo colorCameraInfo = new Camera.CameraInfo();
+    Camera.getCameraInfo(COLOR_CAMERA_ID, colorCameraInfo);
+
+    TangoJNINative.onDisplayChanged(display.getRotation(), colorCameraInfo.orientation);
   }
 }

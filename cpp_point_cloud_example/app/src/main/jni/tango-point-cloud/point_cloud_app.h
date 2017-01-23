@@ -17,15 +17,15 @@
 #ifndef TANGO_POINT_CLOUD_POINT_CLOUD_APP_H_
 #define TANGO_POINT_CLOUD_POINT_CLOUD_APP_H_
 
+#include <atomic>
 #include <jni.h>
 #include <memory>
 #include <string>
 
 #include <tango_client_api.h>  // NOLINT
 #include <tango-gl/util.h>
+#include <tango_support_api.h>
 
-#include <tango-point-cloud/point_cloud_data.h>
-#include <tango-point-cloud/pose_data.h>
 #include <tango-point-cloud/scene.h>
 
 namespace tango_point_cloud {
@@ -37,30 +37,26 @@ class PointCloudApp {
   PointCloudApp();
   ~PointCloudApp();
 
-  // Check that the installed version of the Tango API is up to date.
+  // OnCreate() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In the OnCreate
+  // function, we are only checking the Tango Core's version.
   //
-  // @return returns true if the application version is compatible with the
-  //         Tango Core version.
-  bool CheckTangoVersion(JNIEnv* env, jobject caller_activity,
-                         int min_tango_version);
+  // @param env, java environment parameter OnCreate is being called.
+  // @param caller_activity, caller of this function.
+  void OnCreate(JNIEnv* env, jobject caller_activity);
+
+  // OnPause() callback is called when this Android application's
+  // OnCreate function is called from UI thread. In our application,
+  // we disconnect Tango Service and free the Tango configuration
+  // file. It is important to disconnect Tango Service and release
+  // the coresponding resources in the OnPause() callback from
+  // Android, otherwise, this application will hold on to the Tango
+  // resources and other application will not be able to connect to
+  // Tango Service.
+  void OnPause();
 
   // Called when Tango Service is connected successfully.
-  bool OnTangoServiceConnected(JNIEnv* env, jobject binder);
-
-  // Setup the configuration file for the Tango Service.
-  int TangoSetupConfig();
-
-  // Connect the onPoseAvailable callback.
-  int TangoConnectCallbacks();
-
-  // Connect to Tango Service.
-  // This function will start the Tango Service pipeline, in this case, it will
-  // start Motion Tracking and Depth Sensing callbacks.
-  bool TangoConnect();
-
-  // Disconnect from Tango Service, release all the resources that the app is
-  // holding from the Tango Service.
-  void TangoDisconnect();
+  void OnTangoServiceConnected(JNIEnv* env, jobject binder);
 
   // Explicitly reset motion tracking and restart the pipeline.
   // Note that this will cause motion tracking to re-initialize.
@@ -71,25 +67,16 @@ class PointCloudApp {
   //
   // @param pose: The current point cloud returned by the service,
   //              caller allocated.
-  void onPointCloudAvailable(const TangoXYZij* xyz_ij);
-
-  // Tango service pose callback function for pose data. Called when new
-  // information about device pose is available from the Tango Service.
-  //
-  // @param pose: The current pose returned by the service, caller allocated.
-  void onPoseAvailable(const TangoPoseData* pose);
+  void onPointCloudAvailable(const TangoPointCloud* point_cloud);
 
   // Allocate OpenGL resources for rendering, mainly for initializing the Scene.
-  void InitializeGLContent();
+  void OnSurfaceCreated();
 
   // Setup the view port width and height.
-  void SetViewPort(int width, int height);
+  void OnSurfaceChanged(int width, int height);
 
   // Main render loop.
-  void Render();
-
-  // Release all non-OpenGL allocated resources.
-  void DeleteResources();
+  void OnDrawFrame();
 
   // Return total point count in the current depth frame.
   int GetPointCloudVerticesCount();
@@ -114,39 +101,37 @@ class PointCloudApp {
   void OnTouchEvent(int touch_count, tango_gl::GestureCamera::TouchEvent event,
                     float x0, float y0, float x1, float y1);
 
+  // Set screen rotation index.
+  //
+  // @param screen_roatation: the screen rotation index,
+  //    the index is following Android screen rotation enum.
+  //    see Android documentation for detail:
+  //    http://developer.android.com/reference/android/view/Surface.html#ROTATION_0
+  void SetScreenRotation(int rotation_index);
+
  private:
-  // Get a pose in matrix format with extrinsics in OpenGl space.
-  //
-  // @param: timstamp, timestamp of the target pose.
-  //
-  // @return: pose in matrix format.
-  glm::mat4 GetPoseMatrixAtTimestamp(double timstamp);
+  // Setup the configuration file for the Tango Service.
+  void TangoSetupConfig();
 
-  // Query sensor/camera extrinsic from the Tango Service, the extrinsic is only
-  // available after the service is connected.
-  //
-  // @return: error code.
-  TangoErrorType UpdateExtrinsics();
+  // Connect the onPoseAvailable callback.
+  void TangoConnectCallbacks();
 
-  // point_cloud_ contains the data of current depth frame, it also
-  // has the render function to render the points. This instance will be passed
-  // to main_scene_ for rendering.
-  //
-  // point_cloud_ is a thread safe object, the data protection is handled
-  // internally inside the PointCloud class.
-  PointCloudData point_cloud_data_;
+  // Connect to Tango Service.
+  // This function will start the Tango Service pipeline, in this case, it will
+  // start Motion Tracking and Depth Sensing callbacks.
+  void TangoConnect();
 
-  // Mutex for protecting the point cloud data. The point cloud data is shared
-  // between render thread and TangoService callback thread.
-  std::mutex point_cloud_mutex_;
+  // Disconnect from Tango Service, release all the resources that the app is
+  // holding from the Tango Service.
+  void TangoDisconnect();
 
-  // pose_data_ handles all pose onPoseAvailable callbacks, onPoseAvailable()
-  // in this object will be routed to pose_data_ to handle.
-  PoseData pose_data_;
+  // Release all non-OpenGL allocated resources.
+  void DeleteResources();
 
-  // Mutex for protecting the pose data. The pose data is shared between render
-  // thread and TangoService callback thread.
-  std::mutex pose_mutex_;
+  // Point data manager.
+  TangoSupportPointCloudManager* point_cloud_manager_;
+  float point_cloud_average_depth_;
+  int point_cloud_count_;
 
   // main_scene_ includes all drawable object for visualizing Tango device's
   // movement and point cloud.
@@ -156,6 +141,16 @@ class PointCloudApp {
   // before connect to service. For example, we turn on the depth sensing in
   // this example.
   TangoConfig tango_config_;
+
+  // Last valid transforms.
+  glm::mat4 start_service_T_device_;
+  glm::mat4 start_service_opengl_T_depth_tango_;
+
+  // Screen rotation index.
+  int screen_rotation_;
+
+  std::atomic<bool> is_service_connected_;
+  std::atomic<bool> is_gl_initialized_;
 };
 }  // namespace tango_point_cloud
 

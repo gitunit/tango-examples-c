@@ -14,8 +14,8 @@
 #ifndef TANGO_CLIENT_API_H_
 #define TANGO_CLIENT_API_H_
 
-#include <jni.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /// @file tango_client_api.h
@@ -69,7 +69,7 @@ typedef enum {
 } TangoCoordinateFrameType;
 
 /// @brief Tango Error types.
-/// Errors less then 0 should be dealt with by the program.
+/// Errors less than 0 should be dealt with by the program.
 /// Success is denoted by <code>TANGO_SUCCESS = 0</code>.
 typedef enum {
   /// The user has not given permissions to read and write datasets.
@@ -114,6 +114,7 @@ typedef enum {
   TANGO_EVENT_IMU,               ///< IMU Event
   TANGO_EVENT_FEATURE_TRACKING,  ///< Feature Tracking Event
   TANGO_EVENT_AREA_LEARNING,     ///< Area Learning Event
+  TANGO_EVENT_CLOUD_ADF,         ///< Event related to cloud ADFs.
 } TangoEventType;
 
 /// Tango Camera Calibration types. See TangoCameraIntrinsics for a detailed
@@ -124,12 +125,14 @@ typedef enum {
   /// <a href="https://scholar.google.com/scholar?cluster=9093137934172132605">
   /// Parallel tracking and mapping for small AR workspaces</a>.
   TANGO_CALIBRATION_EQUIDISTANT,
+  /// Brown's distortion model, with the parameter vector representing the
+  /// distortion as [k1, k2].
   TANGO_CALIBRATION_POLYNOMIAL_2_PARAMETERS,
-  /// Tsai's K1, K2, K3 model. See
-  /// <a href="http://scholar.google.com/scholar?cluster=3512800631607394002">A
-  /// versatile camera calibration technique for high-accuracy 3D machine
-  /// vision metrology using off-the-shelf TV cameras and lenses</a>.
+  /// Brown's distortion model, with the parameter vector representing the
+  /// distortion as [k1, k2, k3].
   TANGO_CALIBRATION_POLYNOMIAL_3_PARAMETERS,
+  /// Brown's distortion model, with the parameter vector representing the
+  /// distortion as [k1, k2, p1, p2, k3].
   TANGO_CALIBRATION_POLYNOMIAL_5_PARAMETERS,
 } TangoCalibrationType;
 
@@ -142,6 +145,16 @@ typedef enum {
   TANGO_HAL_PIXEL_FORMAT_YV12 = 0x32315659,   ///< YV12
   TANGO_HAL_PIXEL_FORMAT_YCrCb_420_SP = 0x11  ///< NV21
 } TangoImageFormatType;
+
+/// @brief Tango depth data formats.
+typedef enum {
+  /// @deprecated Use @c TANGO_POINTCLOUD_XYZC instead.
+  ///
+  /// See @link TangoXYZij @endlink.
+  TANGO_POINTCLOUD_XYZIJ = -1,
+  /// See @link TangoPointCloud @endlink.
+  TANGO_POINTCLOUD_XYZC = 0
+} TangoDepthMode;
 
 /// Experimental API only, subject to change.
 /// Dataset recording mode.
@@ -330,8 +343,12 @@ typedef struct TangoImageBuffer {
   TangoImageFormatType format;
   /// Pixels in the format of this image buffer.
   uint8_t* data;
+  /// Exposure duration of this image in nanoseconds.
+  int64_t exposure_duration_ns;
 } TangoImageBuffer;
 
+/// @deprecated Use @c TangoPointCloud instead.
+///
 /// The TangoXYZij struct contains information returned from the depth sensor.
 typedef struct TangoXYZij {
   /// An integer denoting the version of the structure.
@@ -340,8 +357,8 @@ typedef struct TangoXYZij {
   /// Time of capture of the depth data for this struct (in seconds).
   double timestamp;
 
-  /// The number of points in depth_data_buffer populated successfully
-  /// is variable with each call to the function, and is returned in
+  /// The number of points in depth_data_buffer populated successfully. This
+  /// is variable with each call to the function, and is returned as number of
   /// (x,y,z) triplets populated (e.g. 2 points populated returned means 6
   /// floats, or 6*4 bytes used).
   uint32_t xyz_count;
@@ -376,6 +393,28 @@ typedef struct TangoXYZij {
   TangoImageBuffer* color_image;
 } TangoXYZij;
 
+/// TangoPointCloud contains information returned from the depth sensor.
+typedef struct TangoPointCloud {
+  /// An integer denoting the version of the structure.
+  uint32_t version;
+
+  /// Time of capture of the depth data for this struct (in seconds).
+  double timestamp;
+
+  /// The number of points in depth_data_buffer populated successfully. This
+  /// is variable with each call to the function, and is returned as number of
+  /// (x,y,z,c) points populated.
+  uint32_t num_points;
+
+  /// An array of packed {X, Y, Z, C} values. {X, Y, Z} is a coordinate triplet
+  /// (in meters). C is a confidence value, in the range of [0, 1], where 1
+  /// corresponds to full confidence. +Z points in the direction of the camera's
+  /// optical axis, perpendicular to the plane of the camera. +X points toward
+  /// the user's right, and +Y points toward the bottom of the screen.
+  /// The origin is the focal center of the depth camera.
+  float (*points)[4];
+} TangoPointCloud;
+
 /// The TangoCameraIntrinsics struct contains intrinsic parameters for a camera.
 ///
 /// Given a 3D point (X, Y, Z) in camera coordinates, the corresponding
@@ -396,8 +435,8 @@ typedef struct TangoXYZij {
 ///
 /// @c TANGO_CALIBRATION_POLYNOMIAL_3_PARAMETERS implements
 /// <a href="https://scholar.google.com/scholar?cluster=3512800631607394002">
-/// Tsai's camera model</a>, where  @c rd is a polynomial that depends on the 3
-/// distortion coefficients @c k1, @c k2 and @c k3:
+/// Brown's camera model</a>, where  @c rd is a polynomial that depends on the
+/// three distortion coefficients @c k1, @c k2 and @c k3:
 ///
 /// @code
 /// rd = ru + k1 * ru^3 + k2 * ru^5 + k3 * ru^7
@@ -450,17 +489,17 @@ typedef struct TangoCameraIntrinsics {
 ///
 /// Possible descriptions (as "key:value") are:
 /// - "TangoServiceException:X" - The service has encountered an exception, and
-/// a text description is given in X.
-/// - "FisheyeOverExposed:X" - the fisheye image is over exposed with average
-/// pixel value X px.
-/// - "FisheyeUnderExposed:X" - the fisheye image is under exposed with average
-/// pixel value X px.
-/// - "ColorOverExposed:X" - the color image is over exposed with average pixel
-/// value X px.
-/// - "ColorUnderExposed:X" - the color image is under exposed with average
-/// pixel value X px.
-/// - "TooFewFeaturesTracked:X" - too few features were tracked in the fisheye
-/// image. The number of features tracked is X.
+///   a text description is given in X.
+/// - "FisheyeOverExposed:X" - The fisheye image is over exposed with average
+///   pixel value X px.
+/// - "FisheyeUnderExposed:X" - The fisheye image is under exposed with average
+///   pixel value X px.
+/// - "ColorOverExposed:X" - The color image is over exposed with average pixel
+///   value X px.
+/// - "ColorUnderExposed:X" - The color image is under exposed with average
+///   pixel value X px.
+/// - "TooFewFeaturesTracked:X" - Too few features were tracked in the fisheye
+///   image. The number of features tracked is X.
 /// - "AreaDescriptionSaveProgress:X" - ADF saving is X * 100 percent complete.
 /// - "Unknown"
 typedef struct TangoEvent {
@@ -473,22 +512,6 @@ typedef struct TangoEvent {
   /// Description of the event value.
   const char* event_value;
 } TangoEvent;
-
-/// The LevelData structure contains information about the current level
-/// according to the current pose of the device.
-typedef struct LevelData {
-  /// Encode the version of the LevelData structure itself.
-  uint32_t version;
-  /// A human readable short name, as it would appear on elevator buttons,
-  /// eg. "5", or "B1" (null-terminated).
-  char short_name[TANGO_LEVEL_SHORT_NAME_BYTE_MAX_LEN];
-  /// Level number E3: the number of floors above ground of this level
-  /// multiplied by 1000, eg. -1000, +2000 for whole floors, 8500 for a
-  /// mezzanine on the 8th floor.
-  int32_t level_number_E3;
-  /// An opaque level ID (null-terminated).
-  char level_id[TANGO_LEVEL_ID_BYTE_MAX_LEN];
-} LevelData;
 
 #ifdef __cplusplus
 extern "C" {
@@ -520,11 +543,12 @@ char* TangoConfig_toString(TangoConfig config);
 /// @{
 
 /// @deprecated This function is implicitly called when needed.
+///
 /// Initialize the Tango Service. To succeed, the calling
 /// application must have camera permissions enabled. The initialization is
 /// invalidated if the service is stopped or faults while a client is running.
-/// TangoService_initialize() uses two parameters, the JNI context, env, and the
-/// native activity object, activity, to check the version that the version of
+/// TangoService_initialize() uses two parameters, the JNI context, @p env, and
+/// the native activity object, @p activity, to check that the version of
 /// Tango Service installed on the device meets the minimum number required by
 /// the client library. The parameters @p env and @p activity may be retrieved
 /// in a native activity for example by:
@@ -537,25 +561,37 @@ char* TangoConfig_toString(TangoConfig config);
 ///   TangoService_initialize(env, activity);
 /// }
 /// @endcode
-/// @param env A pointer to the JNI Context of the native activity.
+/// @param jni_env A pointer to the JNI Context of the native activity.  This
+/// must be of type JNIEnv*, and implicit type conversion should do the right
+/// thing without requiring a cast.
+///
 /// @param activity The native activity object handle of the calling native
-///     activity.
-/// @return Returns @c TANGO_SUCCESS if a the Tango Service version is found to
-///     be compatible with this client's library version and the service was
-///     initialized successfully. Returns @c TANGO_INVALID if either the @p env
-///     and/or @p activity parameter is set to null. Returns @c TANGO_ERROR if
-///     the version check fails, or if the service connection could not be
-///     initialized.
-TangoErrorType TangoService_initialize(JNIEnv* env, jobject activity);
+///     activity.  This should be of type jobject, and implicit type conversion
+///     should do the right thing without requiring a cast.
+///
+/// @return @c TANGO_SUCCESS if a the Tango Service version is found to be
+///     compatible with this client's library version and the service was
+///     initialized successfully; @c TANGO_INVALID if either the @p env and/or
+///     @p activity parameter is set to null; @c TANGO_ERROR if the version
+///     check fails, or if the service connection could not be initialized.
+TangoErrorType TangoService_initialize(void* jni_env, void* activity);
 
-/// Completes initialization of the TangoService by allowing the client to pass
-/// the native binder object received by binding to TangoService back down
-//  to the underlying C API code.
+/// Completes initialization of TangoService by allowing the client to pass the
+/// native binder object received by binding to TangoService back down to the
+//  underlying C API code.
 /// Must be called before trying to use the C API.
+///
+/// @param jni_env A pointer to the JNI Context of the native activity. This
+/// must be of type JNIEnv*, and implicit type conversion should do the right
+/// thing without requiring a cast.
+///
 /// @param iBinder The binder object received after binding to TangoService.
-/// @return Returns @c TANGO_SUCCESS on successfully attaching the binder
-/// to the C API. Returns @c TANGO_ERROR on failure.
-TangoErrorType TangoService_setBinder(JNIEnv* env, jobject iBinder);
+/// This should be of type jobject, and implicit type conversion should do the
+/// right thing without requiring a cast.
+///
+/// @return @c TANGO_SUCCESS on successfully attaching the binder to the C API;
+///     @c TANGO_ERROR on failure.
+TangoErrorType TangoService_setBinder(void* jni_env, void* iBinder);
 
 /// Creates a TangoConfig object with configuration settings from the service.
 /// This should be used to initialize a Config object for setting the
@@ -571,10 +607,10 @@ TangoErrorType TangoService_setBinder(JNIEnv* env, jobject iBinder);
 /// configure the service, and can safely be freed after it has been used in
 /// TangoService_connect().
 /// @param config_type The requested configuration type.
-/// @return Returns a handle (TangoConfig*) for a newly allocated TangoConfig
-///     object with settings as requested by config_type. Returns NULL if the
-///     config_type is not valid, the config could not be allocated, the service
-///     could not be initialized, or an internal failure occurred.
+/// @return A handle (TangoConfig*) for a newly allocated @c TangoConfig object
+///     with settings as requested by config_type. Returns @c NULL if the
+///     @p config_type is not valid, the config could not be allocated, the
+///     service could not be initialized, or an internal failure occurred.
 TangoConfig TangoService_getConfig(TangoConfigType config_type);
 
 /// Sets the configuration of the Tango Service and starts it running.
@@ -592,7 +628,7 @@ TangoConfig TangoService_getConfig(TangoConfigType config_type);
 /// @param config The service will be started with the setting specified by this
 ///     TangoConfig handle. If NULL is passed here, then the service will be
 ///     started in the default configuration.
-/// @return Returns @c TANGO_SUCCESS on successfully starting the configuration.
+/// @return @c TANGO_SUCCESS on successfully starting the configuration.
 ///     Returns @c TANGO_ERROR on failure, or if the camera could not be opened
 ///     which could be due to cameras being opened by other applications or
 ///     could be caused by a system error which may require a reboot. Returns
@@ -608,8 +644,8 @@ TangoErrorType TangoService_connect(void* context, TangoConfig config);
 /// Must be called after TangoService_connect(), on a running system.
 /// @param tconfig The service will be configured while running to the newly
 ///     specified setting.
-/// @return Returns @c TANGO_SUCCESS on successfully reconfiguring the
-///     service. Returns @c TANGO_INVALID if the app has not connected to the
+/// @return @c TANGO_SUCCESS on successfully reconfiguring the service.
+///     Returns @c TANGO_INVALID if the app has not connected to the
 ///     service, in which case no changes are made, or if tconfig is NULL.
 ///     Returns @c TANGO_ERROR on failure or if the service was not found on the
 ///     device.
@@ -666,11 +702,6 @@ TangoErrorType TangoService_connectOnPoseAvailable(
                                          const TangoPoseData* pose),
     ...);
 
-TangoErrorType TangoService_connectOnLevelDataChanged(
-    void (*TangoService_onLevelDataChanged)(void* context,
-                                            const LevelData* level_data),
-    ...);
-
 /// Get a pose at a given timestamp from the base to the target frame.
 ///
 /// All poses returned are marked as @c TANGO_POSE_VALID (in the
@@ -693,10 +724,10 @@ TangoErrorType TangoService_connectOnLevelDataChanged(
 ///     @c TANGO_COORDINATE_FRAME_START_OF_SERVICE.
 /// @param pose The pose of target with respect to base frame of reference. Must
 ///     be allocated by the caller, and is overwritten upon return.
-/// @return Returns @c TANGO_SUCCESS if a pose was returned successfully. Check
-///     the @c status_code attribute on the returned @p pose to see if it is
+/// @return @c TANGO_SUCCESS if a pose was returned successfully. Check the
+///     @c status_code attribute on the returned @c pose to see if it is
 ///     valid. Returns @c TANGO_INVALID if the base and target frame are the
-///     same, or if the base or if the target frame is not valid, or if
+///     same, or if the base or the target frame is not valid, or if
 ///     timestamp is less than 0, or if the service has not yet begun running
 ///     (TangoService_connect() has not completed).
 TangoErrorType TangoService_getPoseAtTime(double timestamp,
@@ -738,7 +769,7 @@ TangoErrorType TangoService_getPoseAtTime(double timestamp,
 ///     TangoCoordinateFrameId, the base frame field of @p pose is set to
 ///     respectively @c TANGO_COORDINATE_FRAME_UUID or to its equivalent
 ///     TangoCoordinateFrameType. The same rule holds for @p target_frame_id.
-/// @return Returns @c TANGO_SUCCESS if a pose was returned successfully. Check
+/// @return @c TANGO_SUCCESS if a pose was returned successfully. Check
 ///     the @c status_code attribute on the returned @p pose to see if it is
 ///     valid. Returns @c TANGO_INVALID if the base and target frame are the
 ///     same, or if the base or the target frame is not valid, or if the
@@ -751,7 +782,7 @@ TangoErrorType TangoService_Experimental_getPoseAtTime2(
 
 /// Creates a frame of interest (FOI) in the currently loaded ADF. FOIs
 /// will be stored next to this ADF, local FOIs will be stored on the device and
-/// and cloud FOIs will be stored on the cloud server.
+/// cloud FOIs will be stored on the cloud server.
 /// @param timestamp Timestamp of the base frame transformation, in seconds. If
 ///     not set to 0.0, createFrameOfInterest uses the interpolated
 ///     transformation closest to this timestamp to create an FOI. If set to
@@ -768,7 +799,7 @@ TangoErrorType TangoService_Experimental_getPoseAtTime2(
 /// @param tango_transformation The transformation of the newly created FOI with
 ///     respect to @p base_frame_id.
 /// @param foi_id The id of the newly created FOI.
-/// @return Returns @c TANGO_SUCCESS if an FOI was created successfully. Returns
+/// @return @c TANGO_SUCCESS if an FOI was created successfully, or
 ///     @c TANGO_INVALID if @p base_frame_id is invalid (format), unknown or if
 ///     the transformation of the newly created FOI cannot be resolved using the
 ///     given @p timestamp, @p base_frame_id and @p tango_transformation.
@@ -794,7 +825,7 @@ TangoErrorType TangoService_Experimental_createFrameOfInterest(
 /// @param tango_transformation The transformation of the newly created FOI with
 ///     respect to @p base_frame_id.
 /// @param foi_id The id of the FOI to be updated.
-/// @return Returns @c TANGO_SUCCESS if an FOI was created successfully. Returns
+/// @return @c TANGO_SUCCESS if an FOI was created successfully, or
 ///     @c TANGO_INVALID if the @p base_frame_id and/or @p foi_id are invalid
 ///     (format), unknown or if the transformation of the updated FOI cannot be
 ///     resolved using the given @p timestamp, @p base_frame_id and
@@ -816,6 +847,8 @@ TangoErrorType TangoService_Experimental_deleteFrameOfInterest(
 /// @brief Functions for getting depth information from the device.
 /// @{
 
+/// @deprecated Use TangoService_connectOnPointCloudAvailable instead.
+///
 /// Attach an onXYZijAvailable callback. The callback is called each time new
 /// depth data is available. On the Tango tablet, the depth callback occurs at
 /// 5 Hz.
@@ -825,11 +858,26 @@ TangoErrorType TangoService_Experimental_deleteFrameOfInterest(
 /// called with a null context.
 /// @param TangoService_onXYZijAvailable Function pointer for the callback
 ///     function.
-/// @return Returns @c TANGO_ERROR if the callback function pointer is null.
-///     Returns @c TANGO_SUCCESS otherwise.
+/// @return @c TANGO_ERROR if the callback function pointer is null;
+///     @c TANGO_SUCCESS otherwise.
 TangoErrorType TangoService_connectOnXYZijAvailable(
     void (*TangoService_onXYZijAvailable)(void* context,
                                           const TangoXYZij* xyz_ij),
+    ...);
+
+/// Attach an onPointCloudAvailable callback. The callback is called each time
+/// new depth data is available.
+///
+/// An optional argument following the callback pointer can be supplied and will
+/// be returned in the callback context parameter if TangoService_connect() was
+/// called with a null context.
+/// @param TangoService_onPointCloudAvailable Function pointer for the callback
+///     function.
+/// @return @c TANGO_ERROR if the callback function pointer is null;
+///     @c TANGO_SUCCESS otherwise.
+TangoErrorType TangoService_connectOnPointCloudAvailable(
+    void (*TangoService_onPointCloudAvailable)(void* context,
+                                               const TangoPointCloud* cloud),
     ...);
 
 /**@} */
@@ -851,10 +899,13 @@ TangoErrorType TangoService_connectOnTangoEvent(
 /**@} Event Notification */
 
 /// @defgroup Camera Tango Service: Camera Interface
-/// @brief Functions for getting input from the device's cameras. Use either
-/// TangoService_connectTextureId() or TangoService_connectOnFrameAvailable()
-/// but not both.
+/// @brief Functions for getting input from the device's cameras. Use
+/// no more than one of TangoService_connectTextureId() or
+/// TangoService_connectOnTextureAvailable().
 /// @{
+
+/// Callback for when a new camera texture is available.
+typedef void (*TangoService_OnTextureAvailable)(void*, TangoCameraId);
 
 /// Connect a Texture ID to a camera; the camera is selected by specifying a
 /// TangoCameraId. Currently only @c TANGO_CAMERA_COLOR and
@@ -864,38 +915,74 @@ TangoErrorType TangoService_connectOnTangoEvent(
 /// config_enable_color_camera must be set to true for connectTextureId
 /// to succeed after TangoService_connect() is called.
 ///
-/// Note: The first scan-line of the color image is reserved for metadata
+/// Note: The first scanline of the color image is reserved for metadata
 /// instead of image pixels.
 /// @param id The ID of the camera to connect this texture to. Only
 ///     @c TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE are supported.
 /// @param context The context returned during the onFrameAvailable callback.
 /// @param tex The texture ID of the texture to connect the camera to. Must be
 ///     a valid texture in the applicaton.
-/// @return Returns @c TANGO_INVALID if the camera ID is not valid. Otherwise
-///     returns @c TANGO_ERROR if an internal error occurred.
-TangoErrorType TangoService_connectTextureId(TangoCameraId id, unsigned int tex,
-                                             void* context,
-                                             void (*callback)(void*,
-                                                              TangoCameraId));
+/// @return @c TANGO_INVALID if the camera ID is not valid, or @c TANGO_ERROR if
+///     an internal error occurred.
+TangoErrorType TangoService_connectTextureId(
+    TangoCameraId id, unsigned int tex, void* context,
+    TangoService_OnTextureAvailable callback);
 
 /// Update the texture that has been connected to camera referenced by
-/// TangoCameraId. The texture is updated with the latest image from the
+/// @p TangoCameraId. The texture is updated with the latest image from the
 /// camera.
-/// If timestamp is not NULL, it will be filled with the image timestamp.
+/// If timestamp is not @c NULL, it will be filled with the image timestamp.
 /// @param id The ID of the camera to connect this texture to. Only
 ///     @c TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE are supported.
 /// @param timestamp Upon return, if not NULL upon calling, timestamp contains
 ///     the timestamp of the image that has been pushed to the connected
 ///     texture.
-/// @return Returns @c TANGO_INVALID if @p id is out of range or if a texture ID
-///     was never associated with the camera. Otherwise returns
-///     @c TANGO_SUCCESS.
+/// @return @c TANGO_INVALID if @p id is out of range or if a texture ID was
+///     never associated with the camera; @c TANGO_SUCCESS otherwise.
 TangoErrorType TangoService_updateTexture(TangoCameraId id, double* timestamp);
+
+/// Connect a callback to a camera.
+///
+/// Currently only @c TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE
+/// are supported. The TangoConfig flag @c config_enable_color_camera
+/// must be set to true for connectOnTextureAvailable to succeed after
+/// @c TangoService_connect() is called.
+///
+/// Note: The first scanline of the color image is reserved for metadata
+/// instead of image pixels.
+/// @param id The ID of the camera to connect this texture to. Only
+///     @c TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE are supported.
+/// @param context The context returned during the onTextureAvailable callback.
+/// @param callback The callback called when a new texture is available.
+/// @return @c TANGO_INVALID if the camera ID is not valid, or @c TANGO_ERROR if
+///     an internal error occurred.
+TangoErrorType TangoService_connectOnTextureAvailable(
+    TangoCameraId id, void* context, TangoService_OnTextureAvailable callback);
+
+/// Update a GL_TEXTURE_EXTERNAL_OES texture to the latest camera
+/// image available.
+///
+/// If timestamp is not NULL, it will be filled with the image
+/// timestamp. The texture passed in must be of type @c
+/// GL_TEXTURE_EXTERNAL_OES. This is not checked.
+///
+/// @param id The ID of the camera to use for the update. Only @c
+///    TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE are supported.
+/// @param tex Texture to update. This texture must be of type @c
+///    GL_TEXTURE_EXTERNAL_OES.
+/// @param timestamp Upon return, if not NULL upon calling, timestamp
+///     contains the timestamp of the image that has been pushed to the
+///    texture.
+/// @return @c TANGO_INVALID if @p id is out of range or if @c tex is not a
+///     texture ID; @c TANGO_SUCCESS otherwise.
+TangoErrorType TangoService_updateTextureExternalOes(TangoCameraId id,
+                                                     unsigned int tex,
+                                                     double* timestamp);
 
 /// Connect a callback to a camera for access to the pixels. This is not
 /// recommended for display but for applications requiring access to the
-/// @c HAL_PIXEL_FORMAT_YV12 pixel data. The camera is selected via
-/// TangoCameraId. Currently only @c TANGO_CAMERA_COLOR and
+/// pixel data as an array of bytes. The camera is selected via
+/// @p TangoCameraId. Currently only @c TANGO_CAMERA_COLOR and
 /// @c TANGO_CAMERA_FISHEYE are supported. The @c onFrameAvailable callback will
 /// be called when a new frame is available from the camera.
 /// The TangoConfig flag @p config_enable_color_camera (see @link
@@ -903,7 +990,7 @@ TangoErrorType TangoService_updateTexture(TangoCameraId id, double* timestamp);
 /// TangoService_connectOnFrameAvailable() to succeed after
 /// TangoService_connect() is called.
 ///
-/// Note: The first scan-line of the color image is reserved for metadata
+/// Note: The first scanline of the color image is reserved for metadata
 /// instead of image pixels.
 /// @param id The ID of the camera to connect this texture to. Only
 ///     @c TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE are supported.
@@ -918,7 +1005,7 @@ TangoErrorType TangoService_connectOnFrameAvailable(
 /// Disconnect a camera. The camera is selected via TangoCameraId.
 /// Currently only @c TANGO_CAMERA_COLOR and @c TANGO_CAMERA_FISHEYE are
 /// supported.
-/// This call will disconnect callbacks that have been registered with
+/// This call disconnects callbacks that have been registered with
 /// TangoService_connectTextureId() or TangoService_connectOnFrameAvailable().
 TangoErrorType TangoService_disconnectCamera(TangoCameraId id);
 
@@ -933,10 +1020,10 @@ TangoErrorType TangoService_disconnectCamera(TangoCameraId id);
 /// @param intrinsics A TangoCameraIntrinsics struct that must be allocated
 ///     before calling, and is filled with calibration intrinsics for the camera
 ///     @p camera_id upon successful return.
-/// @return Returns @c TANGO_SUCCESS on successfully retrieving calibration
-///     intrinsics. Returns @c TANGO_INVALID if the @p camera_id is out of range
-///     or if intrinsics argument was null. Returns @c TANGO_ERROR if an
-///     internal error occurs while getting intrinsics.
+/// @return @c TANGO_SUCCESS on successfully retrieving calibration intrinsics,
+///     @c TANGO_INVALID if the @p camera_id is out of range or if intrinsics
+///     argument was @c NULL, or @c TANGO_ERROR if an internal error occurs
+///     while getting intrinsics.
 TangoErrorType TangoService_getCameraIntrinsics(TangoCameraId camera_id,
     TangoCameraIntrinsics* intrinsics);
 
@@ -987,18 +1074,18 @@ TangoErrorType TangoService_getCameraIntrinsics(TangoCameraId camera_id,
 ///
 /// @param uuid Upon saving, the TangoUUID to refer to this ADF is returned in
 ///     @p uuid .
-/// @return Returns @c TANGO_SUCCESS on success, and @c TANGO_ERROR if a failure
-///     occurred when saving, or if the service needs to be initialized, or
-///     @c TANGO_INVALID if uuid is NULL, or of incorrect length, or if Area
+/// @return @c TANGO_SUCCESS on success, @c TANGO_ERROR if a failure occurred
+///     when saving or if the service needs to be initialized, or
+///     @c TANGO_INVALID if uuid is @c NULL, or of incorrect length, or if Area
 ///     Learning Mode was not set (see logcat for details).
 TangoErrorType TangoService_saveAreaDescription(TangoUUID* uuid);
 
 /// Deletes an area description with the specified unique ID. This method should
 /// not be called to delete the ADF that is currently loaded.
 /// @param uuid The area description to delete.
-/// @return Returns @c TANGO_SUCCESS if area description file with specified
-///     unique ID is found and can be removed. Returns @c TANGO_ERROR on failure
-///     to delete, or if the service needs to be initialized.
+/// @return @c TANGO_SUCCESS if area description file with specified
+///     unique ID is found and can be removed; otherwise @c TANGO_ERROR on
+///     failure to delete or if the service needs to be initialized.
 TangoErrorType TangoService_deleteAreaDescription(const TangoUUID uuid);
 
 /// Gets the full list of unique area description IDs available on a
@@ -1006,8 +1093,8 @@ TangoErrorType TangoService_deleteAreaDescription(const TangoUUID uuid);
 /// be deallocated outside the API.
 /// @param uuid_list Upon successful return, @p uuid_list will contain a comma
 ///     separated list of available UUIDs.
-/// @return Returns @c TANGO_SUCCESS on success, or @c TANGO_ERROR on failure to
-///     retrieve the list, or if the service needs to be initialized, or
+/// @return @c TANGO_SUCCESS on success, @c TANGO_ERROR on failure to retrieve
+///     the list or if the service needs to be initialized, or
 ///     @c TANGO_INVALID if the @p uuid_list argument was NULL.
 TangoErrorType TangoService_getAreaDescriptionUUIDList(char** uuid_list);
 
@@ -1016,25 +1103,25 @@ TangoErrorType TangoService_getAreaDescriptionUUIDList(char** uuid_list);
 /// TangoAreaDescriptionMetadata_free().
 /// @param uuid The TangoUUID for which to load the metadata.
 /// @param metadata The metadata handle associated with the uuid.
-/// @return Returns @c TANGO_SUCCESS on successful load of metadata, or
-///     @c TANGO_ERROR if the service needs to be initialized or if the metadata
-///     could not be loaded, or @c TANGO_INVALID if metadata was NULL.
+/// @return @c TANGO_SUCCESS on successful load of metadata, @c TANGO_ERROR if
+///     the service needs to be initialized or if the metadata could not be
+///     loaded, or @c TANGO_INVALID if metadata was @c NULL.
 TangoErrorType TangoService_getAreaDescriptionMetadata(
     const TangoUUID uuid, TangoAreaDescriptionMetadata* metadata);
 
 /// Saves the metadata associated with a single area description unique ID.
 /// @param uuid The TangoUUID associated with the metadata.
 /// @param metadata The metadata to be saved.
-/// @return Returns @c TANGO_SUCCESS on successful save, or @c TANGO_ERROR on
-///     failure, or if the service needs to be initialized, or @c TANGO_INVALID
-///     if metadata was NULL.
+/// @return @c TANGO_SUCCESS on successful save, @c TANGO_ERROR on failure or if
+///     the service needs to be initialized, or @c TANGO_INVALID if metadata was
+///     @c NULL.
 TangoErrorType TangoService_saveAreaDescriptionMetadata(
     const TangoUUID uuid, TangoAreaDescriptionMetadata metadata);
 
 /// Frees the memory allocated by a call to
 /// TangoService_getAreaDescriptionMetadata().
 /// @param metadata The handle to the metadata to be deallocated.
-/// @return Returns @c TANGO_SUCCESS if the metadata was deleted.
+/// @return @c TANGO_SUCCESS if the metadata was deleted.
 TangoErrorType TangoAreaDescriptionMetadata_free(
     TangoAreaDescriptionMetadata metadata);
 
@@ -1043,9 +1130,9 @@ TangoErrorType TangoAreaDescriptionMetadata_free(
 /// @param src_file_path The source file path of the area to be imported.
 /// @param uuid Populated with the UUID of the new file. This will be the same
 ///     as the source file's UUID.
-/// @return Returns @c TANGO_SUCCESS on successful import, or @c TANGO_ERROR if
+/// @return @c TANGO_SUCCESS on successful import, @c TANGO_ERROR if
 ///     the file could not be imported, or @c TANGO_INVALID if @p uuid or
-///     @p src_file_path was NULL.
+///     @p src_file_path was @c NULL.
 TangoErrorType TangoService_importAreaDescription(const char* src_file_path,
                                                   TangoUUID* uuid);
 
@@ -1053,16 +1140,16 @@ TangoErrorType TangoService_importAreaDescription(const char* src_file_path,
 /// the destination file directory with the UUID as its name.
 /// @param uuid the UUID of the area.
 /// @param dst_file_dir The destination file directory.
-/// @return Returns @c TANGO_SUCCESS if the file was exported, or @c TANGO_ERROR
-///     if the export failed, or @c TANGO_INVALID if @p dst_file_dir was NULL.
+/// @return @c TANGO_SUCCESS if the file was exported, @c TANGO_ERROR if the
+///     export failed, or @c TANGO_INVALID if @p dst_file_dir was @c NULL.
 TangoErrorType TangoService_exportAreaDescription(
     const TangoUUID uuid, const char* dst_file_dir);
 
 /// Searches through the metadata list for a key that matches the parameter
 /// @p key. If such a key is found, returns the @p value_size and
 /// @p value associated with that key. If the key has not been initialized
-/// in the map the @p value_size will be 0 and the @p value will be
-/// NULL.
+///     in the map the @p value_size will be 0 and the @p value will be
+///     @c NULL.
 ///
 /// The supported keys are:
 ///
@@ -1088,8 +1175,8 @@ TangoErrorType TangoService_exportAreaDescription(
 /// For the @c transformation key, the transformation data consists
 /// of 7 double precision elements:
 ///
-/// - <code>x, y, z</code> :ECEF (earth centered earth fixed) Cartesian frame of
-/// reference at the center of the earth which rotates with the earth).
+/// - <code>x, y, z</code> : ECEF (earth centered earth fixed) Cartesian frame
+/// of reference at the center of the earth which rotates with the earth).
 /// - <code>qx, qy, qz, qw</code> : Hamilton Quaternion.
 ///
 /// The default corresponding values are:
@@ -1106,10 +1193,10 @@ TangoErrorType TangoService_exportAreaDescription(
 ///     of scope after a call to TangoAreaDescriptionMetadata_free().
 ///     The value will be NULL if the key does not exist or has not been set
 ///     yet.
-/// @return Returns @c TANGO_SUCCESS if the key is found. If the key is valid
+/// @return @c TANGO_SUCCESS if the key is found. If the key is valid
 ///     but does not have a valid value, size will be set to 0 and value will
-///     contain a NULL. Returns @c TANGO_INVALID if any of the arguments are
-///     NULL or the key is not found.
+///     contain @c NULL. Returns @c TANGO_INVALID if any of the arguments are
+///     @c NULL or the key is not found.
 TangoErrorType TangoAreaDescriptionMetadata_get(
     TangoAreaDescriptionMetadata metadata, const char* key, size_t* value_size,
     char** value);
@@ -1123,9 +1210,8 @@ TangoErrorType TangoAreaDescriptionMetadata_get(
 /// @param value_size The size in bytes of @p value, as allocated by the caller.
 ///     @p value will be written only up to this size in bytes.
 /// @param value The value to which to set the key.
-/// @return Returns @c TANGO_SUCCESS if the key is set, otherwise returns
-///     @c TANGO_INVALID if the key is not found in the metadata or any of the
-///     arguments is NULL.
+/// @return @c TANGO_SUCCESS if the key is set, or @c TANGO_INVALID if the key
+///     is not found in the metadata or any of the arguments is @c NULL.
 TangoErrorType TangoAreaDescriptionMetadata_set(
     TangoAreaDescriptionMetadata metadata, const char* key, size_t value_size,
     const char* value);
@@ -1134,8 +1220,8 @@ TangoErrorType TangoAreaDescriptionMetadata_set(
 /// not be deallocated outside the API.
 /// @param metadata The metadata from which to read the keys.
 /// @param key_list Place to store the comma separated list
-/// @return Returns @c TANGO_SUCCESS on success, @c TANGO_INVALID if the
-///     metadata was not valid or key_list is NULL.
+/// @return @c TANGO_SUCCESS on success, or @c TANGO_INVALID if the @p metadata
+///     was not valid or @p key_list is @c NULL.
 TangoErrorType TangoAreaDescriptionMetadata_listKeys(
     TangoAreaDescriptionMetadata metadata, char** key_list);
 
@@ -1169,6 +1255,10 @@ TangoErrorType TangoAreaDescriptionMetadata_listKeys(
 ///         Exposure value for the color camera, in nanoseconds. Default is
 ///         11100000 (11.1 ms). Valid from 0 to 30000000. Only applied if
 ///         config_color_mode_auto is set to false.</td></tr>
+///
+/// <tr><td>int32 config_depth_mode</td><td>
+///         Determines the depth data format provided from the API. See
+///         @link TangoDepthMode @endlink for supported formats.</td></tr>
 ///
 /// <tr><td>boolean config_enable_auto_recovery</td><td>
 ///         Automatically recovers when motion tracking becomes invalid, by
@@ -1204,17 +1294,6 @@ TangoErrorType TangoAreaDescriptionMetadata_listKeys(
 /// <tr><td>boolean config_enable_motion_tracking</td><td>
 ///         Enables motion tracking if true. Defaults to true.</td></tr>
 ///
-/// <tr><td>boolean config_experimental_high_accuracy_small_scale_adf</td><td>
-///         EXPERIMENTAL Toggles between high-accuracy-small-scale and
-///         normal-accuracy-large-scale ADFs when learning mode is enabled.
-///         The higher accuracy is only supported in environments the size of a
-///         small home. A Tango device can contain a mixture of ADFs with normal
-///         and with high accuracy. When relocalizing against an ADF, the API
-///         automatically selects the correct algorithms based on the type of
-///         ADF. Note that it is not possible yet to learn additional parts of
-///         an environment into the same high accuracy ADF; all learning has to
-///         happen in one single session.</td></tr>
-///
 /// <tr><td>boolean config_high_rate_pose</td><td>
 ///         This flag enables 100Hz pose updates in callback mode. If disabled,
 ///         pose updates are provided at 33Hz in callback mode. Default value is
@@ -1232,6 +1311,15 @@ TangoErrorType TangoAreaDescriptionMetadata_listKeys(
 ///
 /// <tr><td>boolean config_enable_dataset_recording</td><td>
 ///         Enables recording of a dataset to disk.</td></tr>
+///
+/// <tr><td>boolean config_enable_drift_correction</td><td>
+///         Enables drift-corrected mode. When drift-corrected mode is enabled,
+///         the drift-corrected pose is available through the frame pair with
+///         base frame AREA_DESCRIPTION and target frame DEVICE.
+///         The base frame START_OF_SERVICE, target frame DEVICE frame pair
+///         remains the same as only enabling config_enable_motion_tracking
+///         flag. learning_mode and loading load_area_description cannot be
+///         used if drift correction is enabled</td></tr>
 ///
 /// <tr><td>boolean config_experimental_enable_scene_reconstruction</td><td>
 ///         EXPERIMENTAL This flag enables the experimental scene reconstruction
@@ -1281,8 +1369,8 @@ TangoErrorType TangoAreaDescriptionMetadata_listKeys(
 ///     must have been created with TangoConfig_getConfig().
 /// @param key The string key value of the configuration parameter to set.
 /// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if @p config
-///     or key is NULL, or key is not found or could not be set.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if @p config
+///     or @p key is NULL, or key is not found or could not be set.
 TangoErrorType TangoConfig_setBool(TangoConfig config, const char* key,
                                    bool value);
 
@@ -1291,8 +1379,8 @@ TangoErrorType TangoConfig_setBool(TangoConfig config, const char* key,
 ///     must have been created with TangoConfig_getConfig().
 /// @param key The string key value of the configuration parameter to set.
 /// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if @p config
-///     or @p key is NULL, or @p key is not found or could not be set.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if @p config
+///     or @p key is NULL, or if @p key is not found or could not be set.
 TangoErrorType TangoConfig_setInt32(TangoConfig config, const char* key,
                                     int32_t value);
 
@@ -1301,8 +1389,8 @@ TangoErrorType TangoConfig_setInt32(TangoConfig config, const char* key,
 ///     must have been created with TangoConfig_getConfig().
 /// @param key The string key value of the configuration parameter to set.
 /// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if @p config
-///     or @p key is NULL, or @p key is not found or could not be set.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if @p config
+///     or @p key is NULL, or if @p key is not found or could not be set.
 TangoErrorType TangoConfig_setInt64(TangoConfig config, const char* key,
                                     int64_t value);
 
@@ -1311,8 +1399,8 @@ TangoErrorType TangoConfig_setInt64(TangoConfig config, const char* key,
 ///     must have been created with TangoConfig_getConfig().
 /// @param key The string key value of the configuration parameter to set.
 /// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if @p config
-///     or @p key is NULL, or @p key is not found or could not be set.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if @p config
+///     or @p key is NULL, or if @p key is not found or could not be set.
 TangoErrorType TangoConfig_setDouble(TangoConfig config, const char* key,
                                      double value);
 
@@ -1321,37 +1409,37 @@ TangoErrorType TangoConfig_setDouble(TangoConfig config, const char* key,
 ///     must have been created with TangoConfig_getConfig().
 /// @param key The string key value of the configuration parameter to set.
 /// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if @p config
-///     or @p key is NULL, or @p key is not found or could not be set.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if @p config
+///     or @p key is NULL, or if @p key is not found or could not be set.
 TangoErrorType TangoConfig_setString(TangoConfig config, const char* key,
                                      const char* value);
 
 /// Get a boolean configuration parameter.
 /// @param config The configuration object to get the parameter from. config
 ///     must have been created with TangoConfig_getConfig().
-/// @param key The string key value of the configuration parameter to set.
-/// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if the any
-///     of the arguments is NULL, or if the key could not be found.
+/// @param key The string key value of the configuration parameter to get.
+/// @param value Upon success, set to the value for the configuration key.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if the any
+///     of the arguments is @c NULL, or if the key could not be found.
 TangoErrorType TangoConfig_getBool(TangoConfig config, const char* key,
                                    bool* value);
 
 /// Get a uint32_t configuration parameter.
 /// @param config The configuration object to get the parameter from. @p config
 ///     must have been created with TangoConfig.
-/// @param key The string key value of the configuration parameter to set.
-/// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if the any
-///     of the arguments is NULL, or if the key could not be found.
+/// @param key The string key value of the configuration parameter to get.
+/// @param value Upon success, set to the value for the configuration key.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if the any
+///     of the arguments is @c NULL, or if the key could not be found.
 TangoErrorType TangoConfig_getInt32(TangoConfig config, const char* key,
                                     int32_t* value);
 
 /// Get an uint64_t configuration parameter.
 /// @param config The configuration object to get the parameter from. @p config
 ///     must have been created with TangoConfig.
-/// @param key The string key value of the configuration parameter to set.
-/// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if the any
+/// @param key The string key value of the configuration parameter to get.
+/// @param value Upon success, set to the value for the configuration key.
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if the any
 ///     of the arguments is NULL, or if the key could not be found.
 TangoErrorType TangoConfig_getInt64(TangoConfig config, const char* key,
                                     int64_t* value);
@@ -1359,9 +1447,9 @@ TangoErrorType TangoConfig_getInt64(TangoConfig config, const char* key,
 /// Get a double configuration parameter.
 /// @param config The configuration object to get the parameter from. @p config
 ///     must have been created with TangoConfig,
-/// @param key The string key value of the configuration parameter to set.
-/// @param value The value to set the configuration key to.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if the any
+/// @param key The string key value of the configuration parameter to get.
+/// @param value Upon success, set to the value for the configuration key.
+/// @return  @c TANGO_SUCCESS on success; or @c TANGO_INVALID if the any
 ///     of the arguments is NULL, or if the key could not be found.
 TangoErrorType TangoConfig_getDouble(TangoConfig config, const char* key,
                                      double* value);
@@ -1369,12 +1457,12 @@ TangoErrorType TangoConfig_getDouble(TangoConfig config, const char* key,
 /// Get a character string configuration parameter.
 /// @param config The configuration object to get the parameter from. @p config
 ///     must have been created with TangoConfig.
-/// @param key The string key value of the configuration parameter to set.
-/// @param value The value to set the configuration key to. This array must be
-///     allocated by the caller.
+/// @param key The string key value of the configuration parameter to get.
+/// @param value Upon success, set to the value for the configuration
+///     key. This array must be allocated by the caller.
 /// @param size The size in bytes of value, as allocated by the caller. value
 ///     will be written only up to this size in bytes.
-/// @return Returns @c TANGO_SUCCESS on success or @c TANGO_INVALID if the any
+/// @return @c TANGO_SUCCESS on success; or @c TANGO_INVALID if the any
 ///     of the arguments is NULL, or if the key could not be found.
 TangoErrorType TangoConfig_getString(TangoConfig config, const char* key,
                                      char* value, size_t size);
@@ -1397,7 +1485,7 @@ TangoErrorType TangoConfig_getString(TangoConfig config, const char* key,
 /// texture_Cb and texture_Cr will be 2x2 downsampled versions of the same.
 /// See YV12 and NV21 formats for details.
 ///
-/// Note: The first scan-line of the color image is reserved for metadata
+/// Note: The first scanline of the color image is reserved for metadata
 /// instead of image pixels.
 /// @param id The ID of the camera to connect this texture to. Only
 ///     TANGO_CAMERA_COLOR and TANGO_CAMERA_FISHEYE are supported.
@@ -1405,226 +1493,12 @@ TangoErrorType TangoConfig_getString(TangoConfig config, const char* key,
 /// @param texture_y The texture ID to use for the Y-plane.
 /// @param texture_Cb The texture ID to use for a chroma plane.
 /// @param texture_Cr The texture ID to use for a chroma plane.
-/// @return Returns @c TANGO_INVALID if the camera ID is not valid. Otherwise
-///     returns @c TANGO_ERROR if an internal error occurred.
+/// @return @c TANGO_INVALID if the camera ID is not valid, or @c TANGO_ERROR if
+///     an internal error occurred.
 TangoErrorType TangoService_Experimental_connectTextureIdUnity(
     TangoCameraId id, unsigned int texture_y, unsigned int texture_Cb,
     unsigned int texture_Cr, void* context,
     void (*callback)(void*, TangoCameraId));
-
-/// Experimental API only, subject to change.
-/// A mesh, described by vertices and face indices, with optional per-vertex
-/// normals and colors.
-typedef struct TangoMesh_Experimental {
-  /// Index into a three-dimensional fixed grid.
-  int32_t index[3];
-
-  /// Array of vertices. Each vertex is an {x, y, z} coordinate triplet, in
-  /// meters.
-  float (*vertices)[3];
-
-  /// Array of faces. Each face is an index triplet into the vertices array.
-  uint32_t (*faces)[3];
-
-  /// Array of per-vertex normals. Each normal is a normalized {x, y, z} vector.
-  float (*normals)[3];
-
-  /// Array of per-vertex colors. Each color is a 4-tuple of 8-bit {R, G, B, A}
-  /// values.
-  uint8_t (*colors)[4];
-
-  /// Number of vertices, describing the size of the vertices array.
-  uint32_t num_vertices;
-
-  /// Number of faces, describing the size of the faces array.
-  uint32_t num_faces;
-
-  /// If true, each vertex will have an associated normal. In that case, the
-  /// size of the normals array will be equal to num_vertices. Otherwise, the
-  /// size of the normals array will be 0.
-  bool has_normals;
-
-  /// If true, each vertex will have an associated color. In that case, the size
-  /// of the colors array will be equal to num_vertices. Otherwise, the size of
-  /// the colors array will be 0.
-  bool has_colors;
-} TangoMesh_Experimental;
-
-/// Experimental API only, subject to change.
-/// Metadata from the scene reconstruction.
-typedef struct TangoReconstructionMetadata_Experimental {
-  /// Number of volumes allocated.
-  int64_t num_volumes_allocated;
-
-  /// The allocated memory by the volumes in bytes.
-  int64_t volumes_memory_size;
-
-  /// The volumes dimension in meters.
-  float volume_size;
-
-  /// The entire grid bounding box lower boundary in meters.
-  float bbx_min[3];
-
-  /// The entire grid bounding box upper boundary in meters.
-  float bbx_max[3];
-} TangoReconstructionMetadata_Experimental;
-
-/// Experimental API only, subject to change.
-/// Metadata describing a uniform three-dimensional grid.
-typedef struct TangoGridMetadata_Experimental {
-  /// The grid cell size, in meters.
-  float cell_size;
-
-  /// The lower bounding index (inclusive) of the grid. The index is a
-  /// {ix, iy, iz} triplet describing the position on the grid.
-  int32_t minimum_index[3];
-
-  /// The upper bounding index (inclusive) of the grid. The index is a
-  /// {ix, iy, iz} triplet describing the position on the grid.
-  int32_t maximum_index[3];
-
-  /// Number of grid cells that have been instantiated.
-  uint32_t num_active_cells;
-} TangoGridMetadata_Experimental;
-
-/// Experimental API only, subject to change.
-/// Metadata describing a dense reconstruction.
-typedef struct TangoDenseReconstructionMetadata_Experimental {
-  /// Describes the grid used for dense reconstruction.
-  TangoGridMetadata_Experimental grid_metadata;
-} TangoDenseReconstructionMetadata_Experimental;
-
-/// Experimental API only, subject to change.
-/// Attach a TangoService_onMeshVectorAvailableCallback callback. The callback
-/// is invoked when a new array of mesh segments is available. Typically, a new
-/// array of meshes will be sent every time the scene reconstruction receives
-/// new depth input.
-/// @param TangoService_onMeshVectorAvailableCallback Function called when a
-///     array of meshes is available.
-/// @return Returns @c TANGO_SUCCESS if the callback can be attached. Returns
-///     @c TANGO_ERROR if a connection cannot be initialized.
-TangoErrorType TangoService_Experimental_connectOnMeshVectorAvailable(
-    void (*TangoService_onMeshVectorAvailableCallback)(
-        void* context, const int num_meshes,
-        const TangoMesh_Experimental* mesh_segments), ...);
-
-/// Experimental API only, subject to change.
-/// Starts the scene reconstruction. After this function is called, the scene
-/// reconstruction server will begin receiving depth data updates and publishing
-/// the reconstruction meshes.
-/// @return Returns @c TANGO_SUCCESS if the reconstruction can be started.
-///     Returns @c TANGO_ERROR if a connection was not initialized with
-///     TangoService_initialize(). Returns @c TANGO_INVALID if the scene
-///     reconstruction server was not set up during initialization, which can
-///     happen if the @c config_experimental_enable_scene_reconstruction
-///     flag was not enabled.
-TangoErrorType TangoService_Experimental_startSceneReconstruction();
-
-/// Experimental API only, subject to change.
-/// Stops the scene reconstruction. After this function is called, the scene
-/// reconstruction server will stop receiving depth data updates and publishing
-/// the reconstruction meshes. The reconstruction itself will not be cleared.
-/// @return Returns @c TANGO_SUCCESS if the reconstruction can be stopped.
-///     Returns @c TANGO_ERROR if a connection was not initialized with
-///     TangoService_initialize(). Returns @c TANGO_INVALID if the scene
-///     reconstruction server was not set up during initialization, which can
-///     happen if the @c config_experimental_enable_scene_reconstruction flag
-///     was not enabled.
-TangoErrorType TangoService_Experimental_stopSceneReconstruction();
-
-/// Experimental API only, subject to change.
-/// Resets the scene reconstruction by clearing all the stored data. Can be
-/// called both when the scene reconstruction running and stopped.
-/// @return Returns @c TANGO_SUCCESS if the reconstruction can be reset. Returns
-///     @c TANGO_ERROR if a connection was not initialized with
-///     TangoService_initialize(). Returns @c TANGO_INVALID if the scene
-///     reconstruction server was not set up during initialization, which can
-///     happen if the @c config_experimental_enable_scene_reconstruction flag
-///     was not enabled.
-TangoErrorType TangoService_Experimental_resetSceneReconstruction();
-
-/// Experimental API only, subject to change.
-/// Extracts the full mesh from the scene reconstruction.
-/// @param mesh A pointer to the variable to store the output mesh to.
-/// @return Returns @c TANGO_SUCCESS if mesh was successfully extracted. Returns
-///     @c TANGO_ERROR if a connection was not initialized with
-///     TangoService_initialize(). Returns @c TANGO_INVALID if the scene
-///     reconstruction server was not set up during initialization, which can
-///     happen if the @c config_experimental_enable_scene_reconstruction flag
-///     was not enabled.
-TangoErrorType TangoService_Experimental_extractMesh(
-    TangoMesh_Experimental* mesh);
-
-/// Experimental API only, subject to change.
-/// Gets the metadata from the scene reconstruction.
-/// @param metadata A pointer to the variable to store the output metadata.
-/// @return Returns @c TANGO_SUCCESS if metadata was successfully extracted.
-///     Returns @c TANGO_ERROR if a connection was not initialized with
-///     TangoService_initialize(). Returns @c TANGO_INVALID if the scene
-///     reconstruction server was not set up during initialization, which can
-///     happen if the @c config_experimental_enable_scene_reconstruction flag
-///     was not enabled.
-TangoErrorType TangoService_Experimental_getReconstructionMetadata(
-    TangoReconstructionMetadata_Experimental* metadata);
-
-/// The 3D position of a point relative to an arbitrary reference frame.
-typedef struct TangoPositionData_Experimental {
-  /// 3D position ordered x, y, z.
-  double position[3];
-} TangoPositionData_Experimental;
-
-/// Experimental API only, subject to change.
-/// Returns a trajectory from the current device position to the specified goal
-/// position. This will only work when successfully relocalized against an ADF.
-/// The input position and the output trajectory are relative to base_frame;
-/// allowed frames are TANGO_COORDINATE_FRAME_AREA_DESCRIPTION (always) and
-/// TANGO_COORDINATE_FRAME_GLOBAL_WGS84 (only if the ADF's"transformation"
-/// metadata field populated).
-/// @param goal_position_in_base_frame The 3D coordinate of the goal position.
-/// @param base_frame Coordinate frame for the goal and output trajectory.
-/// @param[out] trajectory_size The length of the returned trajectory.
-/// @param[out] trajectory The planned trajectory.
-/// @return Returns @c TANGO_SUCCESS if a trajectory from the current position
-///     to goal position was found. @c TANGO_INVALID can occur if the your
-///     current position in the loaded ADF is not known, if no ADF is loaded,
-///     if base_frame is set to an unsupported value, or if the trajectory
-///     planner failed to initialize. Returns @c TANGO_ERROR if communication
-///     fails or if the service needs to be initialized.
-TangoErrorType TangoService_Experimental_getTrajectoryToGoal(
-    const TangoPositionData_Experimental goal_position_in_base_frame,
-    const TangoCoordinateFrameType base_frame, size_t* trajectory_size,
-    TangoPositionData_Experimental** trajectory);
-
-/// Experimental API only, subject to change.
-/// Returns a trajectory between the specified start and goal positions.
-/// This will only work when successfully relocalized against an ADF.
-/// The input positions and the output trajectory are relative to base_frame;
-/// allowed frames are TANGO_COORDINATE_FRAME_AREA_DESCRIPTION (always) and
-/// TANGO_COORDINATE_FRAME_GLOBAL_WGS84 (only if the ADF's"transformation"
-/// metadata field populated).
-/// @param start_position_in_base_frame The 3D coordinate of the start position.
-/// @param goal_position_in_base_frame The 3D coordinate of the goal position.
-/// @param base_frame Coordinate frame for the goal and output trajectory.
-/// @param[out] trajectory_size The length of the returned trajectory.
-/// @param[out] trajectory The planned trajectory.
-/// @return Returns @c TANGO_SUCCESS if a trajectory from the current position
-///     to goal position was found. @c TANGO_INVALID can occur if the your
-///     current position in the loaded ADF is not known, if no ADF is loaded,
-///     if base_frame is set to an unsupported value, or if the trajectory
-///     planner failed to initialize. Returns @c TANGO_ERROR if communication
-///     fails or if the service needs to be initialized.
-TangoErrorType TangoService_Experimental_getTrajectoryFromStartToGoal(
-    const TangoPositionData_Experimental start_position_in_base_frame,
-    const TangoPositionData_Experimental goal_position_in_base_frame,
-    const TangoCoordinateFrameType base_frame, size_t* trajectory_size,
-    TangoPositionData_Experimental** trajectory);
-
-/// Free a trajectory created by a call to
-/// TangoService_Experimental_getTrajectoryToGoal or to
-/// TangoService_Experimental_getTrajectoryFromStartToGoal.
-/// A trajectory should only be freed if the returned trajectory_size > 0.
-TangoErrorType TangoService_Experimental_freeTrajectory(
-    TangoPositionData_Experimental** trajectory);
 
 /// Experimental API only, subject to change.
 /// Loads an area description with the specified unique ID. This allows an
@@ -1633,10 +1507,10 @@ TangoErrorType TangoService_Experimental_freeTrajectory(
 /// if the connect configuration did not enable learning mode.
 /// @param uuid The unique identifier for the ADF to load. If an empty string,
 ///     unloads all ADFs and turns off area learning.
-/// @return Returns @c TANGO_SUCCESS if the ADF is successfully loaded for
-///     localization (or if all ADFs were unloaded); @c TANGO_INVALID if the
-///     UUID is invalid, or if learning mode is enabled; @c TANGO_ERROR if
-///     communication fails or if the service needs to be initialized.
+/// @return @c TANGO_SUCCESS if the ADF is successfully loaded for localization
+///     (or if all ADFs were unloaded); @c TANGO_INVALID if the UUID is invalid,
+///     or if learning mode is enabled; @c TANGO_ERROR if communication fails or
+///     if the service needs to be initialized.
 TangoErrorType TangoService_Experimental_loadAreaDescription(
     const TangoUUID uuid);
 
@@ -1647,10 +1521,10 @@ TangoErrorType TangoService_Experimental_loadAreaDescription(
 /// if the connect configuration did not enable learning mode.
 /// @param file_path The file path for the ADF to load. If an empty string,
 ///     unloads all ADFs.
-/// @return Returns @c TANGO_SUCCESS if the ADF is successfully loaded for
-///     localization (or if all ADFs were unloaded); @c TANGO_INVALID if the
-///     file path is invalid or if learning mode is enabled; @c TANGO_ERROR
-///     if communication fails.
+/// @return @c TANGO_SUCCESS if the ADF is successfully loaded for localization
+///     (or if all ADFs were unloaded); @c TANGO_INVALID if the file path is
+///     invalid or if learning mode is enabled; @c TANGO_ERROR if communication
+///     fails.
 TangoErrorType TangoService_Experimental_loadAreaDescriptionFromFile(
     const char* file_path);
 
@@ -1660,22 +1534,10 @@ TangoErrorType TangoService_Experimental_loadAreaDescriptionFromFile(
 /// TangoService_Experimental_loadAreaDescriptionFromFile.
 /// @param file_path The file path of the ADF to unload. If an empty string,
 ///     unloads all ADFs and turns off area learning.
-/// @return Returns @c TANGO_SUCCESS if the ADF is unloaded; @c TANGO_INVALID if
-///     the given file path is invalid or does not point to an ADF that was
+/// @return @c TANGO_SUCCESS if the ADF is unloaded; @c TANGO_INVALID if the
+///     given file path is invalid or does not point to an ADF that was
 ///     previously loaded; @c TANGO_ERROR if communication fails.
 TangoErrorType TangoService_Experimental_unloadAreaDescriptionFromFile(
-    const char* file_path);
-
-/// Experimental API only, subject to change.
-/// Loads a navigation graph with the specified file path. This allows an
-/// application to load a graph for navigation after connecting to the service.
-/// It should only be called after calling TangoService_connect(), and then only
-/// if the connect configuration did not enable learning mode.
-/// @param file_path The file path for the graph to load.
-/// @return Returns @c TANGO_SUCCESS if the graph is successfully loaded for
-///     navigation; @c TANGO_INVALID if the file path is invalid; @c TANGO_ERROR
-///     if communication fails or if the service needs to be initialized.
-TangoErrorType TangoService_Experimental_loadNavigationGraphFromFile(
     const char* file_path);
 
 /// Experimental API only, subject to change.
@@ -1688,11 +1550,11 @@ TangoErrorType TangoService_Experimental_loadNavigationGraphFromFile(
 ///     allocated by this call.
 /// @param num_dataset_uuids An output parameter for the number of dataset
 ///     UUIDs returned.
-/// @return Returns @c TANGO_SUCCESS if the dataset UUIDs were successfully
-///     retrieved. Returns @c TANGO_ERROR if communication failed or the
-///     datasets could not be enumerated. Returns @c TANGO_NO_DATASET_PERMISSION
-///     if user has not given permissions to read and write datasets. Returns
-///     @c TANGO_INVALID if any of the arguments passed were NULL.
+/// @return @c TANGO_SUCCESS if the dataset UUIDs were successfully retrieved,
+///     @c TANGO_ERROR if communication failed or the datasets could not be
+///     enumerated, @c TANGO_NO_DATASET_PERMISSION if user has not given
+///     permissions to read and write datasets, or @c TANGO_INVALID if any of
+///     the arguments passed were @c NULL.
 TangoErrorType TangoService_Experimental_getDatasetUUIDs(
     TangoUUID** dataset_uuids, int* num_dataset_uuids);
 
@@ -1700,17 +1562,17 @@ TangoErrorType TangoService_Experimental_getDatasetUUIDs(
 /// Frees up memory allocated by TangoService_Experimental_GetDatasetUUIDs
 /// @param dataset_uuids a dynamic array of TangoUUIDs. Will be deallocated by
 ///     this call.
-/// @returns Returns @c TANGO_INVALID if any of the arguments passed were NULL,
-///     and @c TANGO_SUCCESS otherwise.
+/// @return @c TANGO_INVALID if any of the arguments passed were NULL;
+///     @c TANGO_SUCCESS otherwise.
 TangoErrorType TangoService_Experimental_releaseDatasetUUIDs(
     TangoUUID** dataset_uuids);
 
 /// Experimental API only, subject to change.
 /// Deletes a dataset.
 /// @param dataset_uuid The ID of the dataset to be deleted.
-/// @return Returns @c TANGO_SUCCESS if the dataset was successfully deleted.
-///     Returns @c TANGO_ERROR if communication failed or the datasets could not
-///     be found. Returns @c TANGO_NO_DATASET_PERMISSION if user has not given
+/// @return @c TANGO_SUCCESS if the dataset was successfully deleted,
+///     @c TANGO_ERROR if communication failed or the datasets could not be
+///     found, or @c TANGO_NO_DATASET_PERMISSION if user has not given
 ///     permissions to read and write datasets.
 TangoErrorType TangoService_Experimental_deleteDataset(
     const TangoUUID dataset_uuid);
@@ -1718,19 +1580,10 @@ TangoErrorType TangoService_Experimental_deleteDataset(
 /// Experimental API only, subject to change.
 /// Gets the current dataset UUID.
 /// @param dataset_uuid The current dataset UUID.
-/// @return Returns @c TANGO_SUCCESS if the id was successfully retrieved.
-///     Returns @c TANGO_ERROR if communication failed.
+/// @return @c TANGO_SUCCESS if the id was successfully retrieved, or
+///     @c TANGO_ERROR if communication failed.
 TangoErrorType TangoService_Experimental_getCurrentDatasetUUID(
     TangoUUID* dataset_uuid);
-
-/// Experimental API only, subject to change.
-/// Returns the last level data available, according to the last available pose.
-/// @param level_data An output parameter for the level data returned.
-/// @return Returns @c TANGO_INVALID  if no level data is available for the
-///     last pose available or if the user could not be localized,
-///     @c TANGO_SUCCESS otherwise.
-TangoErrorType TangoService_Experimental_getLastIndoorLevel(
-    LevelData* level_data);
 
 #ifdef __cplusplus
 }

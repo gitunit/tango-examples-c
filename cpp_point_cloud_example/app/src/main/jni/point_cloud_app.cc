@@ -21,80 +21,78 @@
 
 namespace {
 const int kVersionStringLength = 128;
+// The minimum Tango Core version required from this application.
+constexpr int kTangoCoreMinimumVersion = 9377;
 
-// This function routes onXYZijAvailable callbacks to the application object for
-// handling.
+// This function routes onPointCloudAvailable callbacks to the application
+// object for handling.
 //
 // @param context, context will be a pointer to a PointCloudApp
 //        instance on which to call callbacks.
 // @param pose, pose data to route to onPoseAvailable function.
-void onPointCloudAvailableRouter(void* context, const TangoXYZij* xyz_ij) {
+void onPointCloudAvailableRouter(void* context,
+                                 const TangoPointCloud* point_cloud) {
   tango_point_cloud::PointCloudApp* app =
       static_cast<tango_point_cloud::PointCloudApp*>(context);
-  app->onPointCloudAvailable(xyz_ij);
-}
-
-// This function routes onPoseAvailable callbacks to the application object for
-// handling.
-//
-// @param context, context will be a pointer to a PointCloudApp
-//        instance on which to call callbacks.
-// @param pose, pose data to route to onPoseAvailable function.
-void onPoseAvailableRouter(void* context, const TangoPoseData* pose) {
-  tango_point_cloud::PointCloudApp* app =
-      static_cast<tango_point_cloud::PointCloudApp*>(context);
-  app->onPoseAvailable(pose);
+  app->onPointCloudAvailable(point_cloud);
 }
 }  // namespace
 
 namespace tango_point_cloud {
-void PointCloudApp::onPointCloudAvailable(const TangoXYZij* xyz_ij) {
-  std::lock_guard<std::mutex> lock(point_cloud_mutex_);
-  point_cloud_data_.UpdatePointCloud(xyz_ij);
+void PointCloudApp::onPointCloudAvailable(const TangoPointCloud* point_cloud) {
+  TangoSupport_updatePointCloud(point_cloud_manager_, point_cloud);
 }
 
-void PointCloudApp::onPoseAvailable(const TangoPoseData* pose) {
-  std::lock_guard<std::mutex> lock(pose_mutex_);
-  pose_data_.UpdatePose(pose);
-}
-
-PointCloudApp::PointCloudApp() {}
+PointCloudApp::PointCloudApp()
+    : screen_rotation_(0),
+      is_service_connected_(false),
+      is_gl_initialized_(false) {}
 
 PointCloudApp::~PointCloudApp() {
   if (tango_config_ != nullptr) {
     TangoConfig_free(tango_config_);
   }
+  if (point_cloud_manager_ != nullptr) {
+    TangoSupport_freePointCloudManager(point_cloud_manager_);
+    point_cloud_manager_ = nullptr;
+  }
 }
 
-bool PointCloudApp::CheckTangoVersion(JNIEnv* env, jobject activity,
-                                      int min_tango_version) {
+void PointCloudApp::OnCreate(JNIEnv* env, jobject activity) {
   // Check the installed version of the TangoCore.  If it is too old, then
   // it will not support the most up to date features.
   int version;
   TangoErrorType err = TangoSupport_GetTangoVersion(env, activity, &version);
-  return err == TANGO_SUCCESS && version >= min_tango_version;
+  if (err != TANGO_SUCCESS || version < kTangoCoreMinimumVersion) {
+    LOGE("AugmentedRealityApp::OnCreate, Tango Core version is out of date.");
+    std::exit(EXIT_SUCCESS);
+  }
 }
 
-bool PointCloudApp::OnTangoServiceConnected(JNIEnv* env, jobject binder) {
-  TangoErrorType ret = TangoService_setBinder(env, binder);
+void PointCloudApp::OnTangoServiceConnected(JNIEnv* env, jobject iBinder) {
+  TangoErrorType ret = TangoService_setBinder(env, iBinder);
   if (ret != TANGO_SUCCESS) {
     LOGE(
-        "PointCloudApp: Failed to set Binder Tango service with"
+        "PointCloudApp: Failed to set Tango binder with"
         "error code: %d",
         ret);
-    return false;
+    std::exit(EXIT_SUCCESS);
   }
-  return true;
+
+  TangoSetupConfig();
+  TangoConnectCallbacks();
+  TangoConnect();
+  is_service_connected_ = true;
 }
 
-int PointCloudApp::TangoSetupConfig() {
+void PointCloudApp::TangoSetupConfig() {
   // Here, we'll configure the service to run in the way we'd want. For this
   // application, we'll start from the default configuration
   // (TANGO_CONFIG_DEFAULT). This enables basic motion tracking capabilities.
   tango_config_ = TangoService_getConfig(TANGO_CONFIG_DEFAULT);
   if (tango_config_ == nullptr) {
     LOGE("PointCloudApp: Failed to get default config form");
-    return TANGO_ERROR;
+    std::exit(EXIT_SUCCESS);
   }
 
   // Set auto-recovery for motion tracking as requested by the user.
@@ -105,7 +103,7 @@ int PointCloudApp::TangoSetupConfig() {
         "PointCloudApp: config_enable_auto_recovery() failed with error"
         "code: %d",
         ret);
-    return ret;
+    std::exit(EXIT_SUCCESS);
   }
 
   // Enable depth.
@@ -115,62 +113,70 @@ int PointCloudApp::TangoSetupConfig() {
         "PointCloudApp: config_enable_depth() failed with error"
         "code: %d",
         ret);
-    return ret;
+    std::exit(EXIT_SUCCESS);
   }
 
-  return ret;
+  // Need to specify the depth_mode as XYZC.
+  ret = TangoConfig_setInt32(tango_config_, "config_depth_mode",
+                             TANGO_POINTCLOUD_XYZC);
+  if (ret != TANGO_SUCCESS) {
+    LOGE(
+        "PointCloudApp: 'config_depth_mode' configuration flag with error"
+        " code: %d",
+        ret);
+    std::exit(EXIT_SUCCESS);
+  }
+
+  if (point_cloud_manager_ == nullptr) {
+    int32_t max_point_cloud_elements;
+    ret = TangoConfig_getInt32(tango_config_, "max_point_cloud_elements",
+                               &max_point_cloud_elements);
+    if (ret != TANGO_SUCCESS) {
+      LOGE("Failed to query maximum number of point cloud elements.");
+      std::exit(EXIT_SUCCESS);
+    }
+
+    ret = TangoSupport_createPointCloudManager(max_point_cloud_elements,
+                                               &point_cloud_manager_);
+    if (ret != TANGO_SUCCESS) {
+      std::exit(EXIT_SUCCESS);
+    }
+  }
 }
 
-int PointCloudApp::TangoConnectCallbacks() {
-  // Attach the OnXYZijAvailable callback.
+void PointCloudApp::TangoConnectCallbacks() {
+  // Attach the OnPointCloudAvailable callback.
   // The callback will be called after the service is connected.
-  int ret = TangoService_connectOnXYZijAvailable(onPointCloudAvailableRouter);
+  int ret =
+      TangoService_connectOnPointCloudAvailable(onPointCloudAvailableRouter);
   if (ret != TANGO_SUCCESS) {
     LOGE(
         "PointCloudApp: Failed to connect to point cloud callback with error"
         "code: %d",
         ret);
-    return ret;
+    std::exit(EXIT_SUCCESS);
   }
-
-  // Setting up the frame pair for the onPoseAvailable callback.
-  TangoCoordinateFramePair pairs;
-  pairs.base = TANGO_COORDINATE_FRAME_START_OF_SERVICE;
-  pairs.target = TANGO_COORDINATE_FRAME_DEVICE;
-
-  // Attach the onPoseAvailable callback.
-  // The callback will be called after the service is connected.
-  ret = TangoService_connectOnPoseAvailable(1, &pairs, onPoseAvailableRouter);
-  if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PointCloudApp: Failed to connect to pose callback with error"
-        "code: %d",
-        ret);
-    return ret;
-  }
-
-  return ret;
 }
 
 // Connect to the Tango Service, the service will start running:
 // poses can be queried and callbacks will be called.
-bool PointCloudApp::TangoConnect() {
+void PointCloudApp::TangoConnect() {
   TangoErrorType err = TangoService_connect(this, tango_config_);
   if (err != TANGO_SUCCESS) {
     LOGE(
         "PointCloudApp: Failed to connect to the Tango service with"
         "error code: %d",
         err);
-    return false;
+    std::exit(EXIT_SUCCESS);
   }
 
-  err = UpdateExtrinsics();
-  if (err != TANGO_SUCCESS) {
-    LOGE("PointCloudApp: Failed to query sensor extrinsic with error code: %d",
-         err);
-    return false;
-  }
-  return true;
+  // Initialize TangoSupport context.
+  TangoSupport_initializeLibrary();
+}
+
+void PointCloudApp::OnPause() {
+  TangoDisconnect();
+  DeleteResources();
 }
 
 void PointCloudApp::TangoDisconnect() {
@@ -182,80 +188,101 @@ void PointCloudApp::TangoDisconnect() {
   TangoConfig_free(tango_config_);
   tango_config_ = nullptr;
   TangoService_disconnect();
+  is_service_connected_ = false;
 }
 
-void PointCloudApp::InitializeGLContent() { main_scene_.InitGLContent(); }
+void PointCloudApp::OnSurfaceCreated() { main_scene_.InitGLContent(); }
 
-void PointCloudApp::SetViewPort(int width, int height) {
+void PointCloudApp::OnSurfaceChanged(int width, int height) {
   main_scene_.SetupViewPort(width, height);
+  is_gl_initialized_ = true;
 }
 
-void PointCloudApp::Render() {
+void PointCloudApp::OnDrawFrame() {
+  main_scene_.ClearRender();
+
+  if (!is_service_connected_ || !is_gl_initialized_) {
+    return;
+  }
+
   // Query the latest pose transformation and point cloud frame transformation.
   // Point cloud data comes in with a specific timestamp, in order to get the
   // closest pose for the point cloud, we will need to use the
-  // TangoService_getPoseAtTime() to query pose at timestamp.
-  glm::mat4 cur_pose_transformation;
-  glm::mat4 point_cloud_transformation;
-  {
-    std::lock_guard<std::mutex> lock(pose_mutex_);
-    cur_pose_transformation = pose_data_.GetLatestPoseMatrix();
+  // TangoService_getMatrixTransformAtTime() to query a transform at timestamp.
+
+  // Get the last point cloud data.
+  TangoPointCloud* point_cloud = nullptr;
+  TangoSupport_getLatestPointCloud(point_cloud_manager_, &point_cloud);
+  if (point_cloud == nullptr) {
+    return;
   }
 
-  double point_cloud_timestamp;
-  // We make another copy for rendering and depth computation.
-  std::vector<float> vertices_cpy;
-  {
-    std::lock_guard<std::mutex> lock(point_cloud_mutex_);
-    point_cloud_timestamp = point_cloud_data_.GetCurrentTimstamp();
-    std::vector<float> vertices = point_cloud_data_.GetVerticeVector();
-    vertices_cpy = std::vector<float>(vertices);
+  // Get the last device transform to start of service frame in OpenGL
+  // convention.
+  TangoDoubleMatrixTransformData matrix_transform;
+  TangoSupport_getDoubleMatrixTransformAtTime(
+      0, TANGO_COORDINATE_FRAME_START_OF_SERVICE, TANGO_COORDINATE_FRAME_DEVICE,
+      TANGO_SUPPORT_ENGINE_OPENGL, TANGO_SUPPORT_ENGINE_OPENGL,
+      static_cast<TangoSupportDisplayRotation>(screen_rotation_),
+      &matrix_transform);
+  if (matrix_transform.status_code == TANGO_POSE_VALID) {
+    start_service_T_device_ = glm::make_mat4(matrix_transform.matrix);
+  } else {
+    LOGE(
+        "PointCloudExample: Could not find a valid matrix transform at "
+        "time %lf for the device.",
+        0.0);
+    return;
   }
-
-  // Get the latest pose transformation in opengl frame and apply extrinsics to
-  // it.
-  cur_pose_transformation =
-      pose_data_.GetExtrinsicsAppliedOpenGLWorldFrame(cur_pose_transformation);
-
-  // Query pose based on point cloud frame's timestamp.
-  point_cloud_transformation = GetPoseMatrixAtTimestamp(point_cloud_timestamp);
-  // Get the point cloud transformation in opengl frame and apply extrinsics to
-  // it.
-  point_cloud_transformation = pose_data_.GetExtrinsicsAppliedOpenGLWorldFrame(
-      point_cloud_transformation);
 
   // Compute the average depth value.
   float average_depth_ = 0.0f;
-  size_t iteration_size = vertices_cpy.size();
-  size_t vertices_count = 0;
-  for (size_t i = 2; i < iteration_size; i += 3) {
-    average_depth_ += vertices_cpy[i];
-    vertices_count++;
+  for (size_t i = 0; i < point_cloud->num_points; i++) {
+    average_depth_ += point_cloud->points[i][2];
   }
-  if (vertices_count) {
-    average_depth_ /= vertices_count;
+  if (point_cloud->num_points) {
+    average_depth_ /= point_cloud->num_points;
+  }
+  point_cloud_average_depth_ = average_depth_;
+  point_cloud_count_ = point_cloud->num_points;
+
+  std::vector<float> vertices;
+  // Get depth camera transform to start of service frame in OpenGL convention
+  // at the point cloud timestamp.
+  TangoSupport_getDoubleMatrixTransformAtTime(
+      point_cloud->timestamp, TANGO_COORDINATE_FRAME_START_OF_SERVICE,
+      TANGO_COORDINATE_FRAME_CAMERA_DEPTH, TANGO_SUPPORT_ENGINE_OPENGL,
+      TANGO_SUPPORT_ENGINE_TANGO, ROTATION_0, &matrix_transform);
+  if (matrix_transform.status_code == TANGO_POSE_VALID) {
+    start_service_opengl_T_depth_tango_ =
+        glm::make_mat4(matrix_transform.matrix);
+    TangoPointCloud ow_point_cloud;
+    ow_point_cloud.points = new float[point_cloud->num_points][4];
+    ow_point_cloud.num_points = point_cloud->num_points;
+    // Transform point cloud to OpenGL world
+    TangoSupport_doubleTransformPointCloud(matrix_transform.matrix, point_cloud,
+                                           &ow_point_cloud);
+    vertices.resize(point_cloud->num_points * 4);
+    std::copy(&ow_point_cloud.points[0][0],
+              &ow_point_cloud.points[ow_point_cloud.num_points][0],
+              vertices.begin());
+    delete[] ow_point_cloud.points;
+  } else {
+    LOGE(
+        "PointCloudExample: Could not find a valid matrix transform at "
+        "time %lf for the depth camera.",
+        point_cloud->timestamp);
+    return;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(point_cloud_mutex_);
-    point_cloud_data_.SetAverageDepth(average_depth_);
-  }
-
-  main_scene_.Render(cur_pose_transformation, point_cloud_transformation,
-                     vertices_cpy);
+  main_scene_.Render(start_service_T_device_, vertices);
 }
 
 void PointCloudApp::DeleteResources() { main_scene_.DeleteResources(); }
 
-int PointCloudApp::GetPointCloudVerticesCount() {
-  std::lock_guard<std::mutex> lock(point_cloud_mutex_);
-  return point_cloud_data_.GetPointCloudVerticesCount();
-}
+int PointCloudApp::GetPointCloudVerticesCount() { return point_cloud_count_; }
 
-float PointCloudApp::GetAverageZ() {
-  std::lock_guard<std::mutex> lock(point_cloud_mutex_);
-  return point_cloud_data_.GetAverageDepth();
-}
+float PointCloudApp::GetAverageZ() { return point_cloud_average_depth_; }
 
 void PointCloudApp::SetCameraType(
     tango_gl::GestureCamera::CameraType camera_type) {
@@ -265,61 +292,13 @@ void PointCloudApp::SetCameraType(
 void PointCloudApp::OnTouchEvent(int touch_count,
                                  tango_gl::GestureCamera::TouchEvent event,
                                  float x0, float y0, float x1, float y1) {
+  if (!is_service_connected_ || !is_gl_initialized_) {
+    return;
+  }
   main_scene_.OnTouchEvent(touch_count, event, x0, y0, x1, y1);
 }
 
-glm::mat4 PointCloudApp::GetPoseMatrixAtTimestamp(double timstamp) {
-  TangoPoseData pose_start_service_T_device;
-  TangoCoordinateFramePair frame_pair;
-  frame_pair.base = TANGO_COORDINATE_FRAME_START_OF_SERVICE;
-  frame_pair.target = TANGO_COORDINATE_FRAME_DEVICE;
-  TangoErrorType status = TangoService_getPoseAtTime(
-      timstamp, frame_pair, &pose_start_service_T_device);
-  if (status != TANGO_SUCCESS) {
-    LOGE(
-        "PoseData: Failed to get transform between the Start of service and "
-        "device frames at timstamp %lf",
-        timstamp);
-  }
-  if (pose_start_service_T_device.status_code != TANGO_POSE_VALID) {
-    return glm::mat4(1.0f);
-  }
-  return pose_data_.GetMatrixFromPose(pose_start_service_T_device);
+void PointCloudApp::SetScreenRotation(int screen_rotation) {
+  screen_rotation_ = screen_rotation;
 }
-
-TangoErrorType PointCloudApp::UpdateExtrinsics() {
-  TangoErrorType ret;
-  TangoPoseData pose_data;
-  TangoCoordinateFramePair frame_pair;
-
-  // TangoService_getPoseAtTime function is used for query device extrinsics
-  // as well. We use timestamp 0.0 and the target frame pair to get the
-  // extrinsics from the sensors.
-  //
-  // Get device with respect to imu transformation matrix.
-  frame_pair.base = TANGO_COORDINATE_FRAME_IMU;
-  frame_pair.target = TANGO_COORDINATE_FRAME_DEVICE;
-  ret = TangoService_getPoseAtTime(0.0, frame_pair, &pose_data);
-  if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PointCloudApp: Failed to get transform between the IMU frame and "
-        "device frames");
-    return ret;
-  }
-  pose_data_.SetImuTDevice(pose_data_.GetMatrixFromPose(pose_data));
-
-  // Get color camera with respect to imu transformation matrix.
-  frame_pair.base = TANGO_COORDINATE_FRAME_IMU;
-  frame_pair.target = TANGO_COORDINATE_FRAME_CAMERA_DEPTH;
-  ret = TangoService_getPoseAtTime(0.0, frame_pair, &pose_data);
-  if (ret != TANGO_SUCCESS) {
-    LOGE(
-        "PointCloudApp: Failed to get transform between the color camera frame "
-        "and device frames");
-    return ret;
-  }
-  pose_data_.SetImuTDepthCamera(pose_data_.GetMatrixFromPose(pose_data));
-  return ret;
-}
-
 }  // namespace tango_point_cloud

@@ -32,14 +32,23 @@ void OnFrameAvailableRouter(void* context, TangoCameraId,
 // on the CPU.
 inline void Yuv2Rgb(uint8_t yValue, uint8_t uValue, uint8_t vValue, uint8_t* r,
                     uint8_t* g, uint8_t* b) {
-  *r = yValue + (1.370705 * (vValue - 128));
-  *g = yValue - (0.698001 * (vValue - 128)) - (0.337633 * (uValue - 128));
-  *b = yValue + (1.732446 * (uValue - 128));
+      float R = yValue + 1.402 * (vValue - 128) ;
+      float G = yValue - 0.344 * (uValue - 128) - 0.714 * (vValue - 128);
+      float B = yValue + 1.772 * (uValue - 128);
+
+      R= R * !(R<0);
+      G= G * !(G<0);
+      B= B * !(B<0);
+
+      *r = R*(!(R>255)) + 255 * (R>255);
+      *g = G*(!(G>255)) + 255 * (G>255);
+      *b = B*(!(B>255)) + 255 * (B>255);
 }
 }  // namespace
 
 namespace hello_video {
-void HelloVideoApp::OnCreate(JNIEnv* env, jobject caller_activity) {
+void HelloVideoApp::OnCreate(JNIEnv* env, jobject caller_activity,
+                             int activity_rotation, int sensor_rotation) {
   // Check the installed version of the TangoCore.  If it is too old, then
   // it will not support the most up to date features.
   int version = 0;
@@ -57,6 +66,8 @@ void HelloVideoApp::OnCreate(JNIEnv* env, jobject caller_activity) {
   is_texture_id_set_ = false;
   video_overlay_drawable_ = NULL;
   yuv_drawable_ = NULL;
+  activity_rotation_ = activity_rotation;
+  sensor_rotation_ = sensor_rotation;
 }
 
 void HelloVideoApp::OnTangoServiceConnected(JNIEnv* env, jobject binder) {
@@ -182,8 +193,15 @@ void HelloVideoApp::OnSurfaceCreated() {
   if (video_overlay_drawable_ != NULL || yuv_drawable_ != NULL) {
     this->DeleteDrawables();
   }
-  video_overlay_drawable_ = new tango_gl::VideoOverlay();
-  yuv_drawable_ = new YuvDrawable();
+
+  TangoSupportDisplayRotation color_camera_to_display_rotation =
+      tango_gl::util::GetAndroidRotationFromColorCameraToDisplay(
+          activity_rotation_, sensor_rotation_);
+
+  video_overlay_drawable_ = new tango_gl::VideoOverlay(
+      GL_TEXTURE_EXTERNAL_OES, color_camera_to_display_rotation);
+  yuv_drawable_ = new tango_gl::VideoOverlay(GL_TEXTURE_2D,
+                                             color_camera_to_display_rotation);
 }
 
 void HelloVideoApp::OnSurfaceChanged(int width, int height) {
